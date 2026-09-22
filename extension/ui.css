@@ -1,0 +1,55 @@
+/* Shared tokens for the extension's own pages (popup, options).
+   The in-page warning panel carries its own copy, because it is injected
+   into someone else's document and must not depend on our stylesheet order. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --surface: #f7f8fa;
+  --line: #e4e7ec;
+  --fg: #14181f;
+  --muted: #69717f;
+  --faint: #99a1af;
+  --accent: #c2741d;
+  --critical: #b3243a;
+  --high: #a8620f;
+  --ok: #2e7d52;
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181f;
+    --surface: #1b2028;
+    --line: #2a303a;
+    --fg: #e8ebf0;
+    --muted: #98a1ae;
+    --faint: #6c7583;
+    --accent: #f2a33c;
+    --critical: #f07178;
+    --high: #e3a44b;
+    --ok: #6cc08b;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 13px/1.55 var(--sans);
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+code, .mono { font-family: var(--mono); }
+.sev-critical { color: var(--critical); }
+.sev-high { color: var(--high); }
+.sev-medium { color: var(--high); }
+.sev-low { color: var(--muted); }
+button {
+  font: inherit; font-weight: 500; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--surface); color: var(--fg); padding: 6px 11px;
+}
+button:hover { border-color: var(--faint); }
+button.primary { background: var(--fg); color: var(--bg); border-color: transparent; }
+button.link { background: none; border: none; color: var(--muted); padding: 0; text-decoration: underline; text-underline-offset: 2px; }
+button.link:hover { color: var(--fg); }

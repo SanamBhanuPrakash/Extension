@@ -1,0 +1,22 @@
+{
+  "name": "chhanni",
+  "version": "0.1.0",
+  "description": "A sieve for everything you paste into an AI. Catches API keys, credentials and personal data before they leave your browser.",
+  "type": "module",
+  "license": "MIT",
+  "bin": { "chhanni": "bin/chhanni.js" },
+  "exports": {
+    ".": "./src/index.js",
+    "./detect": "./src/detect.js",
+    "./redact": "./src/redact.js"
+  },
+  "files": ["src", "bin", "extension", "README.md", "LICENSE"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "scan": "node bin/chhanni.js"
+  },
+  "keywords": ["dlp", "secrets", "redaction", "prompt", "llm", "chrome-extension", "pii", "dpdp"],
+  "dependencies": {},
+  "devDependencies": {}
+}

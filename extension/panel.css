@@ -1,0 +1,95 @@
+/* The in-page panel. Injected into someone else's document, so every value is
+   set explicitly and every selector is prefixed — it must not inherit from the
+   host page, and must not leak into it. */
+.chhanni-panel {
+  --c-bg: #ffffff; --c-surface: #f7f8fa; --c-line: #e4e7ec;
+  --c-fg: #14181f; --c-muted: #69717f; --c-faint: #99a1af;
+  --c-critical: #b3243a; --c-high: #a8620f; --c-accent: #c2741d;
+
+  position: fixed; right: 20px; bottom: 20px; z-index: 2147483647;
+  width: min(408px, calc(100vw - 40px));
+  box-sizing: border-box;
+  font: 400 13px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  text-align: left; letter-spacing: normal; color: var(--c-fg);
+  background: var(--c-bg);
+  border: 1px solid var(--c-line);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(10,15,25,.06), 0 16px 40px rgba(10,15,25,.16);
+  overflow: hidden;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity .16s ease, transform .16s ease;
+}
+.chhanni-panel.chhanni-in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .chhanni-panel { transition: none; opacity: 1; transform: none; }
+}
+.chhanni-panel * { box-sizing: border-box; }
+
+.chhanni-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 13px 14px; border-bottom: 1px solid var(--c-line);
+}
+.chhanni-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c-critical); flex: none; }
+.chhanni-warn .chhanni-dot { background: var(--c-accent); }
+.chhanni-head strong { font-weight: 600; font-size: 13px; flex: 1; min-width: 0; }
+.chhanni-x {
+  all: unset; cursor: pointer; color: var(--c-faint);
+  font-size: 17px; line-height: 1; padding: 2px 4px; border-radius: 5px;
+}
+.chhanni-x:hover { color: var(--c-fg); background: var(--c-surface); }
+
+.chhanni-body { max-height: 272px; overflow-y: auto; padding: 4px 14px 10px; }
+.chhanni-also { padding: 9px 14px 0; font-size: 11.5px; color: var(--c-muted); border-top: 1px solid var(--c-line); margin-top: 8px; }
+.chhanni-group { padding-top: 10px; }
+.chhanni-group h3 {
+  margin: 0 0 6px; font: 600 10px/1.4 inherit;
+  text-transform: uppercase; letter-spacing: .07em; color: var(--c-faint);
+}
+.chhanni-group ul { list-style: none; margin: 0; padding: 0; }
+.chhanni-group li { padding: 3px 0; }
+.chhanni-row { display: flex; align-items: baseline; gap: 8px; }
+.chhanni-label { font-weight: 500; flex: none; }
+.chhanni-sev-critical .chhanni-label { color: var(--c-critical); }
+.chhanni-sev-high .chhanni-label { color: var(--c-high); }
+.chhanni-row code {
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--c-muted); background: var(--c-surface);
+  border-radius: 4px; padding: 1px 5px; margin-left: auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 48%;
+}
+.chhanni-group em { display: block; font-style: normal; color: var(--c-muted); font-size: 11.5px; margin-top: 1px; }
+.chhanni-terse, .chhanni-more { margin: 0; color: var(--c-muted); font-size: 12px; }
+
+.chhanni-actions { display: flex; gap: 8px; padding: 11px 14px 0; }
+.chhanni-actions button {
+  all: unset; cursor: pointer; text-align: center;
+  font: 500 13px/1 inherit; border-radius: 8px; padding: 9px 13px;
+  border: 1px solid transparent;
+}
+.chhanni-actions button.chhanni-primary { background: var(--c-fg); color: var(--c-bg); flex: 1; }
+.chhanni-actions button.chhanni-primary:hover { background: #2a303a; }
+.chhanni-actions button:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+.chhanni-actions button.chhanni-ghost { color: var(--c-muted); border-color: var(--c-line); }
+.chhanni-actions button.chhanni-ghost:hover { color: var(--c-fg); border-color: var(--c-faint); }
+
+.chhanni-hint { padding: 9px 14px 0; font-size: 11px; color: var(--c-faint); }
+.chhanni-hint kbd {
+  font: 500 10px/1 ui-monospace, Menlo, monospace;
+  border: 1px solid var(--c-line); border-bottom-width: 2px;
+  border-radius: 4px; padding: 2px 4px; color: var(--c-muted);
+}
+.chhanni-foot {
+  margin-top: 11px; padding: 9px 14px;
+  background: var(--c-surface); border-top: 1px solid var(--c-line);
+  font-size: 11px; color: var(--c-muted);
+}
+
+@media (prefers-color-scheme: dark) {
+  .chhanni-panel {
+    --c-bg: #181d25; --c-surface: #1f242d; --c-line: #2a303a;
+    --c-fg: #e8ebf0; --c-muted: #98a1ae; --c-faint: #6c7583;
+    --c-critical: #f07178; --c-high: #e3a44b; --c-accent: #f2a33c;
+    box-shadow: 0 16px 44px rgba(0,0,0,.5);
+  }
+  .chhanni-actions button.chhanni-primary:hover { background: #ffffff; }
+}
