@@ -38,7 +38,7 @@ recall. **No tool in that study achieves both.** The paper's conclusion is that
 regex-and-entropy approaches reach high recall at poor precision.
 
 Chhanni ships `bench/`, a seeded reproducible corpus, and measures **99.88%
-precision and 99.54% recall over 4,247 cases**. `node bench/run.js` prints it on
+precision and 99.88% recall over 4,247 cases**. `node bench/run.js` prints it on
 your machine. The limits of that claim are written down in
 [BENCHMARK.md](BENCHMARK.md), including the fact that the corpus is
 self-authored and that a check digit can never reach zero false positives.

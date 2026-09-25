@@ -234,13 +234,17 @@ test('every detector claiming proof actually has a validator behind it', async (
   for (const id of Object.keys(PROOFS)) {
     const rule = RULES_BY_ID.get(id);
     assert.ok(rule, `${id} is named in PROOFS but is not a rule`);
-    assert.ok(rule.validate || rule.enrich, `${id} claims proof but has no validator`);
+    // Synthetic rules (names, addresses) are produced by src/ner.js rather
+    // than by a pattern, so their proof is the classifier, not a validator.
+    if (!rule.synthetic) {
+      assert.ok(rule.validate || rule.enrich, `${id} claims proof but has no validator`);
+    }
     assert.equal(rule.proof, PROOFS[id]);
   }
   // The number quoted in the README and the UI comes from here; pin it so a
   // new detector cannot quietly inflate the claim.
   const proven = [...RULES_BY_ID.values()].filter((r) => r.proof).length;
-  assert.equal(proven, 24);
+  assert.equal(proven, 26);
 });
 
 test('every rule belongs to exactly one settings category', async () => {
@@ -459,4 +463,117 @@ test('table detection is bounded on a very wide, very long export', () => {
   const r = scan(big);
   assert.ok(Date.now() - started < 5000, 'wide+long export must not hang');
   assert.ok(r.findings.length <= 2000, 'finding count is capped');
+});
+
+// ═══════════════════════════════════════════ names and addresses in prose
+test('names are found in correspondence, with the evidence that found them', async () => {
+  const { findNames } = await import('../src/ner.js');
+  const found = findNames(`Spoke to Priya Nair yesterday. Dr. Venkataraman confirmed it.
+Regards,
+Anita Deshpande`);
+  const names = found.map((n) => n.text);
+  assert.deepEqual(names, ['Priya Nair', 'Venkataraman', 'Anita Deshpande']);
+  assert.ok(found[1].evidence.includes('honorific'));
+  assert.ok(found[0].evidence.includes('full name'));
+});
+
+test('capitalised technical prose produces no names', async () => {
+  const { findNames } = await import('../src/ner.js');
+  const text = `The Kubernetes cluster in Mumbai failed on Tuesday. Google Cloud support
+said the Docker image was corrupt. We deployed React 19 and the Sydney region
+recovered. Check Terraform, Jenkins and the Retention Dashboard under Settings.`;
+  assert.deepEqual(findNames(text).map((n) => n.text), []);
+});
+
+test("an abbreviation's full stop is not a sentence boundary", async () => {
+  const { findNames } = await import('../src/ner.js');
+  // "Dr." once marked the name after it as sentence-initial, and the penalty
+  // cancelled the honorific that had just been detected.
+  assert.deepEqual(findNames('Follow-up with Dr. Venkataraman in six weeks.').map((n) => n.text),
+    ['Venkataraman']);
+  // A real sentence boundary must still split two people apart.
+  assert.deepEqual(findNames('Spoke to Priya Nair. Marcus Whitfield agreed.').map((n) => n.text),
+    ['Priya Nair', 'Marcus Whitfield']);
+});
+
+test('addresses need a number, so a sentence about roads is not one', async () => {
+  const { findAddresses } = await import('../src/ner.js');
+  assert.equal(findAddresses('Flat 3B, 14 Koregaon Park Road, Pune 411001').length, 1);
+  assert.equal(findAddresses('Our records show it went to 221B Baker Street, London NW1 6XE.').length, 1);
+  assert.equal(findAddresses('Traffic on the Ring Road is heavy and the Coastal Highway is closed.').length, 0);
+});
+
+test('a city inside an address is not reported as a separate person', () => {
+  const found = scan('Send it to Flat 3B, 14 Koregaon Park Road, Pune 411001.').groups.map((g) => g.ruleId);
+  assert.ok(found.includes('postal_address'));
+  assert.ok(!found.includes('person_name'), 'Pune belongs to the address');
+});
+
+test('a name-like run inside a key blob is part of the key', () => {
+  const blob = '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAxPriyaNairMarcusWhitfieldQkFuVGhpc0lzTm90QU5hbWU=';
+  const ids = scan(blob).groups.map((g) => g.ruleId);
+  assert.ok(ids.includes('private_key_block'));
+  assert.ok(!ids.includes('person_name'));
+});
+
+test('names and addresses redact like any other finding, in reading order', () => {
+  const text = 'Priya Nair lives at 14 Koregaon Park Road, Pune 411001. Ask Marcus Whitfield.';
+  const out = redact(text).text;
+  assert.ok(out.startsWith('<PERSON_NAME_1>'), 'first name in the document is _1');
+  assert.ok(out.includes('<POSTAL_ADDRESS_1>'));
+  assert.ok(out.includes('<PERSON_NAME_2>'));
+  assert.ok(!out.includes('Priya'));
+  assert.ok(!out.includes('Koregaon'));
+});
+
+test('the name classifier is loaded lazily and memoised', async () => {
+  const { nameScore } = await import('../src/ner.js');
+  const strong = nameScore('Raghavan');
+  const weak = nameScore('Settings');
+  assert.ok(strong > 0.5, `expected a name-like score, got ${strong}`);
+  assert.equal(nameScore('Raghavan'), strong, 'memoised');
+  assert.ok(typeof weak === 'number' && weak >= 0 && weak <= 1);
+});
+
+test('the prose pipeline holds at its published figures', async () => {
+  const { findNames, findAddresses } = await import('../src/ner.js');
+  const { DOCUMENTS } = await import('../bench/ner-corpus.js');
+  const measure = (kind, fn) => {
+    let tp = 0, fp = 0, fn_ = 0;
+    for (const doc of DOCUMENTS) {
+      const gold = [];
+      for (const s of doc[kind]) {
+        let from = 0;
+        for (;;) { const i = doc.text.indexOf(s, from); if (i === -1) break; gold.push({ start: i, end: i + s.length }); from = i + 1; }
+      }
+      const matched = new Set();
+      for (const p of fn(doc.text)) {
+        const hit = gold.find((g) => p.start < g.end && g.start < p.end);
+        if (hit) { tp++; matched.add(hit.start); } else fp++;
+      }
+      for (const g of gold) if (!matched.has(g.start)) fn_++;
+    }
+    return { precision: tp / Math.max(1, tp + fp), recall: tp / Math.max(1, tp + fn_) };
+  };
+  const names = measure('names', (t) => findNames(t));
+  const addresses = measure('addresses', (t) => findAddresses(t));
+  assert.ok(names.precision >= 0.90, `name precision regressed to ${(names.precision * 100).toFixed(1)}%`);
+  assert.ok(names.recall >= 0.95, `name recall regressed to ${(names.recall * 100).toFixed(1)}%`);
+  assert.ok(addresses.precision >= 0.95 && addresses.recall >= 0.95);
+});
+
+test('the Aho-Corasick prefilter finds exactly what includes() would', async () => {
+  const { build, search } = await import('../src/ahocorasick.js');
+  const patterns = ['AKIA', 'ghp_', 'sk-ant-', 'xoxb-', 'BEGIN', 'a', 'aa', 'aaa'];
+  const automaton = build(patterns);
+  for (const text of [
+    'AKIAIOSFODNN7EXAMPLE', 'nothing here', 'ghp_abc and xoxb-def', 'aaaa', '',
+    '-----BEGIN RSA PRIVATE KEY-----', 'sk-ant-api03-xyz', 'AkIa mixed CASE',
+  ]) {
+    const viaAutomaton = [...search(automaton, text)].sort((x, y) => x - y);
+    const viaIncludes = patterns
+      .map((p, i) => (text.toLowerCase().includes(p.toLowerCase()) ? i : -1))
+      .filter((i) => i >= 0);
+    assert.deepEqual(viaAutomaton, viaIncludes, `mismatch on ${JSON.stringify(text)}`);
+  }
 });

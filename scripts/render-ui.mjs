@@ -104,6 +104,17 @@ is 14 months at current burn. We signed the term sheet with Meridian on Tuesday;
 due diligence opens next week and the data room goes live Monday. This is
 material non-public information until the announcement on the 14th.`;
 
+const PROSE = `Hi, can you help me draft a reply to this customer?
+
+Spoke to Priya Nair yesterday about the renewal. She said the invoice went to
+the wrong address \u2014 it should be Flat 3B, 14 Koregaon Park Road, Pune 411001.
+Dr. Venkataraman confirmed the same. Her PAN on file is ABCPD1234E.
+
+I have looped in Marcus Whitfield (Director, Revenue).
+
+Regards,
+Anita Deshpande`;
+
 const LEAK = `Deploy is failing, can you spot the problem?
 
   AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
@@ -158,6 +169,7 @@ await shot('panel-dark', 'harness.html', 900, true, firePaste());
 await shot('panel-light', 'harness.html', 900, false, firePaste());
 await shot('panel-bulk', 'harness.html', 900, true, firePaste(BULK));
 await shot('panel-board', 'harness.html', 900, true, firePaste(BOARD));
+await shot('panel-prose', 'harness.html', 900, true, firePaste(PROSE));
 await shot('options-dark', 'options.html', 800, true, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
 await shot('options-light', 'options.html', 800, false, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
 

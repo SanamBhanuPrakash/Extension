@@ -27,8 +27,10 @@ project was in two versions ago.
 
 ## Now
 
-- 92 detectors. 24 prove the match with a check digit, a decode or an issuer
-  range. 99.88% precision, 99.54% recall over 4,247 reproducible cases.
+- 94 detectors. 26 prove the match with a check digit, a decode, an issuer
+  range or a trained classifier. 99.88% precision, 99.88% recall over 4,247
+  reproducible cases.
+- Names and addresses in prose: F1 97.2% and 100% on 25 annotated documents.
 - Bulk-record detection: a pasted export is reported as *"184 customer records"*,
   not 368 findings.
 - Business context: confidentiality markings, legal privilege, M&A language,
@@ -39,7 +41,18 @@ project was in two versions ago.
 
 ## Next — the things that would matter most
 
-### 1. Unstructured PII, without shipping a model
+### ~~1. Unstructured PII, without shipping a model~~ — shipped
+
+Done, and measured: **names F1 97.2%, addresses F1 100%** on 25 annotated
+documents. A 21 KB logistic regression over hashed character n-grams, trained
+on 30,675 names from 75 locales, combined with structural context. The
+classifier alone reaches 71.7% and cannot go higher; context does the rest.
+[NER.md](NER.md) has the full design, the ceiling, and what it still cannot do
+— coreference, organisation disambiguation, and non-Latin scripts.
+
+What follows is the remaining order.
+
+### 1b. Non-Latin scripts
 
 The largest capability gap. A name, a home address, a medical detail written in
 ordinary prose is invisible to a pattern engine.
@@ -47,13 +60,16 @@ ordinary prose is invisible to a pattern engine.
 cloud classifiers. Neither option is open here: one bloats the package, the
 other breaks the no-network promise.
 
-The tractable path is a compact on-device approach — a gazetteer of given names
-and surnames plus structural cues (honorifics, "lives at", postcode grammar,
-date-of-birth framing) — measured on the
-[Text Anonymization Benchmark](https://aclanthology.org/2022.cl-4.19/) rather
-than asserted. If that cannot beat a stated recall floor, a WASM-quantised NER
-model behind an explicit opt-in is the fallback, and the no-network promise
-survives because the model ships in the package.
+The shipped classifier folds diacritics but assumes Latin characters, so a name
+written in Devanagari, Arabic, Han or Cyrillic is invisible. This is now the
+largest gap for the non-English world, and the same architecture should extend
+to it: the feature extractor is script-agnostic in principle, and the training
+data exists in the same faker locales already used.
+
+The other open piece is evaluation against the
+[Text Anonymization Benchmark](https://aclanthology.org/2022.cl-4.19/), which
+would make the prose numbers independent the way SecretBench would make the
+credential numbers independent.
 
 ### 2. A third-party benchmark
 

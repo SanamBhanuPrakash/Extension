@@ -6,7 +6,7 @@
 
 ### Your prompt leaves your machine the instant you press Enter.<br>Chhanni looks at it first.
 
-**`99.88%` precision · `92` detectors · `0` network permissions**
+**`99.88%` precision · `94` detectors · on-device ML · `0` network permissions**
 
 <img src="docs/images/panel.png" alt="Chhanni warning: exposure 82 out of 100, 184 customer records detected" width="470">
 
@@ -37,9 +37,39 @@ records — and a regex over `AKIA` sees none of it.
 | **Engineer** | A failing deploy's `.env` | **88/100** — *Long-lived IAM key for AWS account 5810-3995-4779 — decoded offline from the key itself.* |
 | **Finance** | A model with ARR and runway | **71/100** — *Company financials with figures attached.* |
 | **Legal** | A memo marked privileged | **90/100** — *Privilege can be waived by disclosure to a third party. An AI provider is a third party.* |
+| **Anyone** | An email about a customer | **58/100** — *Person name ×2. Postal address.* `GDPR` `DPDP Act` |
 
 Then it offers to **redact and continue** — because the model never needed your
 real key, or your customers' real emails, to answer the question.
+
+## It reads ordinary sentences, not just patterns
+
+Most personal data is not in a database export. It is in a sentence:
+
+> Spoke to **Priya Nair** yesterday. The invoice should go to
+> **Flat 3B, 14 Koregaon Park Road, Pune 411001**. **Dr. Venkataraman** confirmed.
+
+<img src="docs/images/prose.png" alt="Chhanni reading names and an address out of an ordinary email" width="440">
+
+A regex sees none of that. Chhanni ships a **21 KB logistic regression** —
+16,384 hashed character features, trained on **30,675 names from 75 locales**
+against 46,528 hard negatives — and combines it with structural context.
+
+```console
+$ node bench/ner.js
+  names      precision 94.6%   recall 100.0%   F1 97.2%
+  addresses  precision 100.0%  recall 100.0%   F1 100.0%
+```
+
+**The honest part:** the classifier alone scores **F1 71.7%**, and more
+training does not move it. A Yoruba place name and a Yoruba person name share
+their morphology; `Austin`, `Paris` and `Virginia` are names *and* places at
+once. Character evidence cannot settle it — an honorific in front, a second
+capitalised token beside it, or the word "region" after it can. The gap between
+71.7% and 97.2% is the design, and [docs/NER.md](docs/NER.md) shows the whole
+log-odds table.
+
+It runs entirely on your device. No model download, no inference API.
 
 ## The one feature that changes the conversation
 
@@ -69,7 +99,9 @@ The only public figures come from academic work on secret scanners
 | Gitleaks | 46% | 88% |
 | TruffleHog | — | 52% |
 | "Commercial X" | 25% | — |
-| **Chhanni** | **99.88%** | **99.54%** |
+| **Chhanni** — credentials | **99.88%** | **99.88%** |
+| **Chhanni** — names in prose | **94.6%** | **100%** |
+| **Chhanni** — addresses | **100%** | **100%** |
 
 No tool in that study has both. Reproduce ours in one command:
 
@@ -77,7 +109,7 @@ No tool in that study has both. Reproduce ours in one command:
 $ node bench/run.js
   precision   100.0%   241 true / 0 false positives
   recall      100.0%   0 missed
-  46,206 byte document scanned in 5.8ms (8 MB/s), 92 detectors
+  46,206 byte document scanned in 5.7ms (8.2 MB/s), 94 detectors
 ```
 
 4,247 cases, ten seeds, seeded PRNG so no real credential is committed here.
@@ -103,8 +135,8 @@ candidate → prefilter → pattern → check digit → benign shape → context
 | **Required context** | Nine digits are nine digits until something says "SIN" |
 | **Offline decoding** | The **AWS account number is recovered from the access key itself** — base32 and a bit shift, no API call. `alg:none` JWTs escalate to critical, because that is a signature bypass |
 
-**92 detectors. 24 prove the match; the other 68 match a prefix nothing else
-uses and are labelled `shape`, not `proof`, everywhere they appear.**
+**94 detectors. 26 prove the match; the rest match a prefix nothing else uses
+and are labelled `shape`, not `proof`, everywhere they appear.**
 
 Coverage is global: Aadhaar, PAN, GSTIN, IFSC, UPI, and Indian DL/passport/voter
 ID alongside CPF/CNPJ (BR), SIN (CA), NINO (UK), ABN/TFN (AU), EU VAT, ISIN,
@@ -173,7 +205,8 @@ review are in **[docs/PUBLISHING.md](docs/PUBLISHING.md)**.
 
 | | |
 |---|---|
-| [ARCHITECTURE](docs/ARCHITECTURE.md) | Layered module graph, the three interception flows, the precision stack, storage split, costs |
+| [ARCHITECTURE](docs/ARCHITECTURE.md) | Layered module graph, the three interception flows, the precision stack, the Aho–Corasick prefilter, costs |
+| [NER](docs/NER.md) | The on-device name model, its 71.7% ceiling, and the context layer that reaches 97.2% |
 | [BENCHMARK](docs/BENCHMARK.md) | Method, per-seed results, and the limits of the claim |
 | [THREAT-MODEL](docs/THREAT-MODEL.md) | Trust boundaries, seven threats, explicit not-covered list |
 | [PRIOR-ART](docs/PRIOR-ART.md) | Who did this first, who sells it, what this lacks |
@@ -184,9 +217,12 @@ review are in **[docs/PUBLISHING.md](docs/PUBLISHING.md)**.
 
 ## What it does not do
 
-- **No ML or NER.** A name or address in ordinary prose is invisible to a
-  pattern engine. [Casper](https://arxiv.org/abs/2408.07004) has an ML layer;
-  this does not. Largest gap, and it is not close — see the roadmap.
+- **Latin script only.** The name classifier folds diacritics but assumes Latin
+  characters, so a name written in Devanagari, Arabic, Han or Cyrillic is not
+  detected. Largest remaining gap for the non-English world.
+- **No coreference, no organisation disambiguation.** "She said the invoice was
+  wrong" is not linked back to Priya, and the two remaining name false
+  positives are companies read as people.
 - **This idea is not new.** Casper published the architecture in 2024;
   **LayerX sold to Akamai for ~$205M in July 2026.** The gap that is real is
   that nobody publishes accuracy.
@@ -200,14 +236,15 @@ review are in **[docs/PUBLISHING.md](docs/PUBLISHING.md)**.
 
 ```console
 $ node --test test/*.test.js
-# tests 51
-# pass 51
+# tests 61
+# pass 61
 ```
 
 Checksums against known-good and known-bad vectors, explicit false-positive
-tests, a prefilter-equivalence proof that the speed optimisation never changes
-results, crash-safety across malformed input and 3 MB pastes, a test that a
-throwing rule degrades only itself, and a benchmark gate that fails below 99%.
+tests, a proof that the Aho–Corasick prefilter returns exactly what
+`includes()` would, crash-safety across malformed input and 3 MB pastes, a test
+that a throwing rule degrades only itself, and two benchmark gates — 99% on
+credentials, 90/95% on names.
 
 One caution the benchmark cannot give you: the GSTIN validator once had an
 off-by-one that rejected **every real GSTIN**, and the benchmark scored 100%

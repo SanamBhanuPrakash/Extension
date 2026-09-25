@@ -10,7 +10,7 @@ seed 20260925 · 424 cases · 241 positive · 183 hard negative
   recall      100.0%   0 missed
   F1          100.0%
 
-  46,206 byte document scanned in 5.8ms (8 MB/s), 92 detectors
+  46,206 byte document scanned in 5.7ms (8.2 MB/s), 94 detectors
 ```
 
 ## Why this file exists
@@ -39,9 +39,9 @@ Across ten seeds, **4,247 cases**:
 
 | | |
 |---|---|
-| Precision | **99.88%** (2,406 true / 3 false positives) |
-| Recall | **99.54%** (11 missed) |
-| F1 | **99.71%** |
+| Precision | **99.88%** (2,417 true / 3 false positives) |
+| Recall | **99.88%** (3 missed) |
+| F1 | **99.88%** |
 
 Per seed:
 
@@ -59,6 +59,24 @@ Per seed:
 | 77777 | 425 | 99.6% | 99.2% | 99.4% |
 
 Reproduce any row with `node bench/run.js --seed 42`.
+
+## Names and addresses in prose
+
+A separate corpus and a separate harness, because the task is different: these
+are annotated documents, not generated strings.
+
+```console
+$ node bench/ner.js
+25 annotated documents · 10 of them hard negatives
+
+  names      precision 94.6%   recall 100.0%   F1 97.2%
+  addresses  precision 100.0%  recall 100.0%   F1 100.0%
+```
+
+The classifier underneath the name detector scores **F1 71.7%** on held-out
+tokens, and that ceiling is real — see [NER.md](NER.md). The pipeline scores
+97.2% because structural context, not character evidence, is what settles
+whether a capitalised word is a person.
 
 ## How the corpus is built
 
@@ -134,7 +152,8 @@ not measuring or not telling you.
 ## Regression guard
 
 `test/detect.test.js` fails the build if precision or recall drops below 99%
-on four seeds. The benchmark is not a one-off claim; it is a gate.
+on four seeds, and separately if name precision drops below 90% or recall below
+95% on the prose corpus. The benchmarks are not one-off claims; they are gates.
 
 One caution it cannot cover: the GSTIN validator once had an off-by-one that
 made it reject every real GSTIN. The benchmark scored **100%** throughout,

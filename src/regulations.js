@@ -37,6 +37,9 @@ export const REGIME_MAP = {
   voter_id: [D('S. 2(t)', 'personal data')],
   indian_dl: [D('S. 2(t)', 'personal data')],
 
+  person_name: [G('Art. 4(1)', 'personal data'), D('S. 2(t)', 'personal data')],
+  postal_address: [G('Art. 4(1)', 'personal data'), D('S. 2(t)', 'personal data')],
+
   // Payment
   payment_card: [
     { regime: 'PCI DSS v4.0', ref: 'Req. 3.3', what: 'primary account number — storage and transmission are controlled' },

@@ -57,9 +57,20 @@ Strictly layered, no cycles. Each layer may import only from below.
       │
       ├── checksums.js    Luhn, Verhoeff, mod-97, CRC32, entropy, issuer ranges
       ├── identifiers.js  national IDs, AWS account decoding
-      └── negatives.js    benign shapes: UUIDs, digests, epochs, placeholders
+      ├── negatives.js    benign shapes: UUIDs, digests, epochs, placeholders
+      ├── context.js      business, legal, financial, health signals
+      └── ahocorasick.js  the multi-pattern prefilter automaton
 
-                          all three import nothing at all
+                          all of these import nothing at all
+
+  ner.js                names and addresses in prose
+      ├── namefeatures.js   hashed character features (shared with the trainer)
+      ├── nameweights.js    21 KB int8 logistic-regression weights
+      └── commonwords.js    4,422 title-cased English words
+
+  tabular.js            bulk-record detection
+  risk.js               the 0-100 exposure score
+  regulations.js        finding -> GDPR / DPDP / HIPAA / PCI / SEC / SEBI
 ```
 
 The three leaf modules importing nothing is load-bearing, not incidental. They
@@ -106,6 +117,27 @@ published for regex-and-entropy tools. No single one gets there: Luhn alone
 accepts roughly 1 in 10 random numbers of the right length. It is the
 *compounding of independent constraints* that does the work.
 
+## The prose pass
+
+Pattern rules cannot see "Priya Nair, 14 Koregaon Park Road". A separate pass
+can, and it runs after the pattern rules so it can be told what they already
+claimed:
+
+```
+  pattern findings ──┐
+                     ├──▶ findAddresses(text)  ─┐
+                     │                          ├──▶ findNames(text, {claimed})
+                     └──────────────────────────┘
+```
+
+Order matters twice. A city inside a postal address is part of the address, not
+a separate person. And a capitalised run inside an AWS key or a private-key
+blob belongs to the credential — which is a real false positive the benchmark
+caught, not a hypothetical.
+
+The classifier scores F1 71.7% alone and the pipeline scores 97.2%. The design
+and its limits are in [NER.md](NER.md).
+
 ## Prefilters
 
 Most detectors are anchored on a literal nothing else uses — `AKIA`, `ghp_`,
@@ -113,13 +145,27 @@ Most detectors are anchored on a literal nothing else uses — `AKIA`, `ghp_`,
 scanner asks whether that literal appears in the text at all. On ordinary prose
 the overwhelming majority of the 92 detectors are skipped outright.
 
+The obvious implementation asks `String.includes` once per literal — around 250
+full passes over the text, which dominated the scan on large pastes. The
+literals are instead compiled once at module load into an **Aho–Corasick
+automaton**, which answers the same question in a single O(n) pass no matter how
+many literals there are. Regexes are likewise compiled once and reused with an
+explicit `lastIndex` reset, rather than recompiled 94 times per scan.
+
+Matching in the automaton is case-insensitive while the regexes are not. That
+can only admit extra candidates, never discard a real one — the safe direction
+for a filter.
+
 This is purely an optimisation and must never change a result, which is not a
 promise worth making without a test behind it: `test/detect.test.js` scans a set
 of samples twice, once with every prefilter stripped, and asserts the findings
-are identical.
+are identical — and separately checks the automaton returns exactly what
+`includes()` would.
 
-Measured: a 46 KB document scanned in ~5.8ms, about 8 MB/s, with all 92
-detectors enabled — table detection included.
+Measured: a 46 KB document scanned in **5.7 ms, about 8.2 MB/s**, with all 94
+detectors, table detection *and* the prose pass enabled. Before the automaton,
+the compiled-regex cache and the NER tokenisation work, the same document with
+*fewer* features took 11.1 ms.
 
 ## Surfaces
 

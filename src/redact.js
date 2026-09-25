@@ -33,22 +33,23 @@ export function redact(text, findings) {
   const perRule = new Map(); // ruleId -> next ordinal
   const map = [];
 
-  // Right to left, so earlier offsets stay valid as we splice.
+  // Ordinals are assigned in READING order, so <PERSON_NAME_1> is the first
+  // name in the document. Splicing still runs right to left, so earlier
+  // offsets stay valid — the two orders are deliberately different.
+  for (const f of [...list].sort((a, b) => a.start - b.start)) {
+    if (assigned.has(f.match)) continue;
+    const n = (perRule.get(f.ruleId) || 0) + 1;
+    perRule.set(f.ruleId, n);
+    const token = tokenName(f.ruleId, n);
+    assigned.set(f.match, token);
+    map.push({ token, ruleId: f.ruleId, label: f.label, preview: f.preview });
+  }
+
   const ordered = [...list].sort((a, b) => b.start - a.start);
   let out = text;
   for (const f of ordered) {
-    let token = assigned.get(f.match);
-    if (!token) {
-      const n = (perRule.get(f.ruleId) || 0) + 1;
-      perRule.set(f.ruleId, n);
-      token = tokenName(f.ruleId, n);
-      assigned.set(f.match, token);
-      map.push({ token, ruleId: f.ruleId, label: f.label, preview: f.preview });
-    }
-    out = out.slice(0, f.start) + token + out.slice(f.end);
+    out = out.slice(0, f.start) + assigned.get(f.match) + out.slice(f.end);
   }
-
-  map.reverse();
   return { text: out, map, changed: ordered.length };
 }
 
@@ -63,7 +64,8 @@ export function redactReversible(text, findings) {
   const table = new Map();
   const assigned = new Map();
   const perRule = new Map();
-  for (const f of [...list].sort((a, b) => b.start - a.start)) {
+  // Same reading order as redact(), so the tokens agree.
+  for (const f of [...list].sort((a, b) => a.start - b.start)) {
     if (assigned.has(f.match)) continue;
     const n = (perRule.get(f.ruleId) || 0) + 1;
     perRule.set(f.ruleId, n);

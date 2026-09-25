@@ -203,3 +203,57 @@ the interruption feels like a pause rather than a takeover.
 **Cost.** An extension page has nothing behind it to blur, so the popup and
 settings paint a soft colour field for the glass to work against. Without it,
 `backdrop-filter` is a no-op and the effect is just a flat card.
+
+
+---
+
+### 13. A small model plus context, not a big model
+
+**Context.** Names in prose needed statistical help; a pattern cannot express
+"looks like a person's name". The options were a gazetteer, a compact trained
+classifier, or a quantised transformer in WASM.
+
+**Decision.** A logistic regression over hashed character n-grams — 21 KB,
+int8, trained on 30,675 names from 75 locales — used as *one term* in a
+log-odds sum with structural context.
+
+**Why.** A gazetteer only recognises names someone already wrote down, which
+fails on exactly the names most likely to be missed. A transformer would score
+better and could not ship: it has to fit in a store-reviewed package, run in a
+content script, and make no network call.
+
+**Cost, and it is the interesting part.** The classifier alone reaches F1 71.7%
+and *will not go higher* — a Yoruba place name and a Yoruba person name share
+their morphology, and 1,900 tokens are both a name and a place. Reporting that
+ceiling honestly, rather than quoting the pipeline's 97.2% as if it were the
+model's, is the difference between a measurement and a marketing number.
+
+---
+
+### 14. Train-time and inference-time features are the same file
+
+**Decision.** `src/namefeatures.js` ships in the extension *and* is imported by
+`tools/train-name-model.js`.
+
+**Why.** Training/serving skew is the most common way a small model silently
+stops working, and the cheapest prevention is having one copy of the code
+rather than two that agree today.
+
+---
+
+### 15. Aho–Corasick for the prefilter
+
+**Context.** ~250 prefilter literals, each tested with `String.includes` — 250
+full passes over the text, which dominated the scan on large pastes.
+
+**Decision.** One automaton, built at module load, answering the question in a
+single O(n) pass. Regexes compiled once and reused rather than recompiled 94
+times per scan.
+
+**Why.** A 46 KB paste went from 11.1 ms to 5.7 ms *while gaining* the prose
+pass. Latency in a content script is not a benchmark number; it is the
+difference between a tool that feels instant and one people disable.
+
+**Cost.** ~80 lines of data structure to maintain, and a test asserting the
+automaton returns exactly what `includes()` would — an optimisation that can
+change results is a bug, not an optimisation.

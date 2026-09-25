@@ -505,6 +505,19 @@ export const RULES = [
 // which redaction honours by leaving them in place.
 RULES.push(...CONTEXT_RULES);
 
+/**
+ * Names and addresses are produced by src/ner.js, not by a pattern. They are
+ * registered here so they inherit categories, proofs, policy and the settings
+ * UI; `synthetic: true` tells the scanner not to run them as regexes.
+ */
+RULES.push(
+  { id: 'person_name', label: 'Person name', severity: 'medium', confidence: 'possible',
+    synthetic: true, pattern: /(?!)/g,
+    note: 'Personal data under GDPR and the DPDP Act when it identifies someone.' },
+  { id: 'postal_address', label: 'Postal address', severity: 'high', confidence: 'likely',
+    synthetic: true, pattern: /(?!)/g },
+);
+
 export const RULES_BY_ID = new Map(RULES.map((r) => [r.id, r]));
 
 /** Grouping, for the settings UI only. Kept out of the rule objects. */
@@ -518,6 +531,7 @@ export const CATEGORIES = [
   { id: 'generic', label: 'Generic secrets', ids: ['private_key_block', 'db_connection_string', 'jwt', 'bearer_header', 'high_entropy_assignment'] },
   { id: 'india', label: 'India — identity', ids: ['aadhaar', 'pan_india', 'gstin', 'ifsc', 'upi_vpa', 'indian_passport', 'voter_id', 'indian_dl', 'phone_india'] },
   CONTEXT_CATEGORY,
+  { id: 'prose', label: 'Names & addresses in prose', ids: ['person_name', 'postal_address'] },
   { id: 'global', label: 'Global — identity', ids: ['payment_card', 'iban', 'us_ssn', 'canada_sin', 'uk_nino', 'brazil_cpf', 'brazil_cnpj', 'australia_abn', 'australia_tfn', 'eu_vat', 'isin', 'imei', 'email'] },
 ];
 
@@ -537,6 +551,8 @@ for (const group of CATEGORIES) {
  * itself, so it is written down rather than inferred — and `bench/` measures it.
  */
 export const PROOFS = {
+  person_name: 'a character-n-gram classifier trained on 30,675 names from 75 locales, combined with structural context',
+  postal_address: 'structural \u2014 a house number or postcode plus a street or unit component',
   aws_access_key_id: 'base32 decode recovers the AWS account number from the key itself',
   aws_secret_access_key: 'Shannon entropy \u2265 4.2, a credential word within 48 characters, and not a hex digest',
   github_token: "CRC32 checksum carried in the token's own last 6 characters",

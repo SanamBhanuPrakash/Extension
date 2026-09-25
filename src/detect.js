@@ -13,6 +13,45 @@ import { RULES, RULES_BY_ID } from './rules.js';
 import { detectTable, tableSeverity, describeTable } from './tabular.js';
 import { exposureScore, BAND_TEXT } from './risk.js';
 import { regimesFor, regimeNames } from './regulations.js';
+import { findNames, findAddresses } from './ner.js';
+import { build as buildAutomaton, search as searchAutomaton } from './ahocorasick.js';
+
+/**
+ * Compiled once at import, not per scan.
+ *
+ * Two costs used to be paid on every keystroke-sized paste: ~92 `new RegExp`
+ * compilations, and ~250 separate `String.includes` passes for the prefilter.
+ * Both are now amortised to module load.
+ */
+const COMPILED = new Map();      // ruleId -> RegExp, for the main pass
+const CELL_COMPILED = new Map(); // ruleId -> RegExp, for table-cell scanning
+function compiled(cache, rule) {
+  let re = cache.get(rule.id);
+  if (!re) { re = new RegExp(rule.pattern.source, rule.pattern.flags); cache.set(rule.id, re); }
+  re.lastIndex = 0;
+  return re;
+}
+
+// Every prefilter literal, flattened, with a map back to the rules that need it.
+const PREFILTER_LITERALS = [];
+const LITERAL_OWNERS = [];       // literal index -> rule ids
+{
+  const index = new Map();
+  for (const rule of RULES) {
+    if (!rule.prefilter) continue;
+    for (const literal of rule.prefilter) {
+      let id = index.get(literal.toLowerCase());
+      if (id === undefined) {
+        id = PREFILTER_LITERALS.length;
+        index.set(literal.toLowerCase(), id);
+        PREFILTER_LITERALS.push(literal);
+        LITERAL_OWNERS.push([]);
+      }
+      LITERAL_OWNERS[id].push(rule.id);
+    }
+  }
+}
+const AUTOMATON = buildAutomaton(PREFILTER_LITERALS);
 
 /**
  * Hard limits. A content script shares a thread with someone's actual work, so
@@ -22,6 +61,11 @@ import { regimesFor, regimeNames } from './regulations.js';
 const MAX_SCAN_BYTES = 2_000_000;   // beyond this we scan a prefix and say so
 const MAX_MATCHES_PER_RULE = 500;   // a pathological input cannot spin forever
 const MAX_TOTAL_FINDINGS = 2000;
+// Name and address detection walks every token, so it costs more per byte than
+// the pattern rules. Past this size the marginal value is low (a 300 KB paste
+// is a data dump, which the table detector already characterises) and the
+// latency is not worth it.
+const MAX_NER_BYTES = 200_000;
 
 const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
 const CONFIDENCE_RANK = { certain: 3, likely: 2, possible: 1 };
@@ -104,21 +148,25 @@ export function scan(input, policy = {}) {
   const text = truncated ? input.slice(0, MAX_SCAN_BYTES) : input;
   const errors = [];
 
+  // One pass answers the prefilter question for every rule at once.
+  const presentLiterals = searchAutomaton(AUTOMATON, text);
+  const eligible = new Set();
+  for (const id of presentLiterals) for (const ruleId of LITERAL_OWNERS[id]) eligible.add(ruleId);
+
   for (const rule of RULES) {
-    if (disabled.has(rule.id)) continue;
+    if (disabled.has(rule.id) || rule.synthetic) continue;
     // Prefilter: a cheap substring test before an expensive backtracking regex.
     // Most detectors are anchored on a literal nothing else uses (AKIA, ghp_,
     // xoxb-), so on ordinary prose the overwhelming majority are skipped
     // outright. This is what keeps an 81-detector scan cheap on a large paste.
-    if (rule.prefilter && !rule.prefilter.some((needle) => text.includes(needle))) continue;
+    if (rule.prefilter && !eligible.has(rule.id)) continue;
     if (raw.length >= MAX_TOTAL_FINDINGS) break;
 
     // Every rule runs inside its own try/catch. One malformed pattern, one
     // validator that throws on an input nobody anticipated, must degrade that
     // single detector — never the scan, and never the page the scan runs in.
     try {
-      // Each scan gets its own regex so lastIndex is never shared across calls.
-      const re = new RegExp(rule.pattern.source, rule.pattern.flags);
+      const re = compiled(COMPILED, rule);
       let m;
       let hits = 0;
       while ((m = re.exec(text)) !== null) {
@@ -162,6 +210,44 @@ export function scan(input, policy = {}) {
       }
     } catch (err) {
       errors.push({ ruleId: rule.id, stage: 'match', message: String(err && err.message) });
+    }
+  }
+
+  // ── names and addresses in prose ──────────────────────────────────────
+  // The pattern rules above cannot see "Priya Nair, 14 Koregaon Park Road".
+  // This pass can, and it is the majority of how personal data actually
+  // appears outside a database export.
+  if (p.ner !== false && text.length <= MAX_NER_BYTES
+      && !disabled.has('person_name') && !disabled.has('postal_address')) {
+    try {
+      // Everything the pattern rules already claimed is off-limits to NER:
+      // a capitalised run inside an AWS key or a private-key blob is part of
+      // the credential, not a person.
+      const alreadyFound = raw.map((f) => ({ start: f.start, end: f.end }));
+      const addresses = findAddresses(text);
+      for (const a of addresses) {
+        raw.push({
+          ruleId: 'postal_address', label: 'Postal address',
+          severity: 'high', confidence: a.parts >= 3 ? 'likely' : 'possible',
+          note: `Structural match: ${a.evidence.join(', ')}.`,
+          advisory: false, audience: 'everyone',
+          start: a.start, end: a.end, match: a.text,
+          preview: mask(a.text), fingerprint: fingerprint(a.text), line: line(text, a.start),
+        });
+      }
+      for (const n of findNames(text, { claimed: [...addresses, ...alreadyFound] })) {
+        raw.push({
+          ruleId: 'person_name', label: 'Person name',
+          severity: 'medium',
+          confidence: n.score >= 0.95 ? 'likely' : 'possible',
+          note: n.evidence.length ? `Read as a name from: ${n.evidence.join(', ')}.` : null,
+          advisory: false, audience: 'everyone',
+          start: n.start, end: n.end, match: n.text,
+          preview: mask(n.text), fingerprint: fingerprint(n.text), line: line(text, n.start),
+        });
+      }
+    } catch (err) {
+      errors.push({ ruleId: 'ner', stage: 'detect', message: String(err && err.message) });
     }
   }
 
@@ -245,10 +331,10 @@ function scanCell(cell, disabled, allow) {
   const out = [];
   if (typeof cell !== 'string' || !cell || cell.length > 400) return out;
   for (const rule of RULES) {
-    if (rule.advisory || disabled.has(rule.id)) continue;
+    if (rule.advisory || rule.synthetic || disabled.has(rule.id)) continue;
     if (rule.prefilter && !rule.prefilter.some((n) => cell.includes(n))) continue;
     try {
-      const re = new RegExp(rule.pattern.source, rule.pattern.flags);
+      const re = compiled(CELL_COMPILED, rule);
       const m = re.exec(cell);
       if (!m) continue;
       const value = m[rule.group ?? (m[1] !== undefined ? 1 : 0)] ?? m[0];

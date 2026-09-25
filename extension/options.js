@@ -100,14 +100,34 @@ allow.onchange = () =>
   save({ allow: allow.value.split('\n').map((s) => s.trim()).filter(Boolean) });
 
 // -------------------------------------------------------------- playground
-const EXAMPLE = `Our deploy is failing, can you spot the problem?
+const EXAMPLES = [
+  `Our deploy is failing, can you spot the problem?
 
   AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
   DATABASE_URL=postgres://app:Xq7vTm2Lp@db-prod.internal:5432/orders
   SUPPORT_EMAIL=ops@northwind.co.in
 
 The customer's card on file is 4242 4242 4242 4242.
-Order 1234567890123456 went through fine, though.`;
+Order 1234567890123456 went through fine, though.`,
+
+  `Spoke to Priya Nair yesterday about the renewal. She said the invoice went
+to the wrong address \u2014 it should be Flat 3B, 14 Koregaon Park Road, Pune 411001.
+Dr. Venkataraman confirmed the same.
+
+Regards,
+Anita Deshpande`,
+
+  `PRIVILEGED AND CONFIDENTIAL \u2014 DO NOT DISTRIBUTE
+
+Board, ahead of Thursday: ARR closed the quarter at $4.2M, up 31%. Cash runway
+is 14 months at current burn. We signed the term sheet with Meridian on Tuesday;
+the data room goes live Monday. Material non-public information until the 14th.`,
+
+  ['customer_id,name,email,phone,city',
+    ...Array.from({ length: 120 }, (_, i) =>
+      `${9000 + i},Customer ${i},c${i}@northwind.co.in,9${String(812345670 + i)},Pune`)].join('\n'),
+];
+let exampleIndex = 0;
 
 function runPlayground() {
   const text = $('sample').value;
