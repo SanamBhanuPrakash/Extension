@@ -47,22 +47,79 @@ build.
 Strictly layered, no cycles. Each layer may import only from below.
 
 ```
-  index.js            public surface
+  index.js              public surface
       │
-  redact.js           placeholder substitution, reversible
+  redact.js             placeholder substitution, reversible
       │
-  detect.js           scanning, overlap resolution, masking, fingerprinting
+  detect.js             scanning, prefiltering, overlap resolution, masking
       │
-  rules.js            the 30 detectors, plus category and proof metadata
+  rules.js              the 81 detectors, with prefilters, categories, proofs
       │
-  checksums.js        Luhn, Verhoeff, mod-97, CRC32, entropy, JWT decode
-                      (imports nothing at all)
+      ├── checksums.js    Luhn, Verhoeff, mod-97, CRC32, entropy, issuer ranges
+      ├── identifiers.js  national IDs, AWS account decoding
+      └── negatives.js    benign shapes: UUIDs, digests, epochs, placeholders
+
+                          all three import nothing at all
 ```
 
-`checksums.js` importing nothing is load-bearing, not incidental. It is the
-layer that decides whether a finding is real, so it is the layer most worth
-reading closely and the one that must be readable without following any other
-file.
+The three leaf modules importing nothing is load-bearing, not incidental. They
+are the layers that decide whether a finding is real, so they are the ones most
+worth reading closely, and they must be readable without following a single
+reference.
+
+### Why negatives are their own module
+
+`checksums.js` answers *is this arithmetically valid?* `negatives.js` answers a
+different question — *is this a thing that is supposed to be in your text?* —
+and the answers are independent. A git SHA is not invalid; it is simply not a
+secret. Keeping them apart means a rule can consult either without inheriting
+the other's assumptions, which matters because `payment_card` must consult the
+issuer range but must **not** consult the repetition guard: `4242424242424242`
+is a repeated pattern *and* a real card number, and an early version suppressed
+it.
+
+## The precision stack
+
+Detection is five independent filters, not one. Each is cheap and each is
+allowed to reject:
+
+```
+  candidate match
+        │
+   1. prefilter        does the literal even appear in the text?
+        │
+   2. pattern          does it have the right shape?
+        │
+   3. validate         does its own check digit accept it?          ← checksums.js
+        │
+   4. benign guard     is it a UUID / digest / epoch / placeholder? ← negatives.js
+        │
+   5. context          is the required nearby word present?
+        │
+   6. overlap          did a stronger rule already claim this span?
+        │
+     finding
+```
+
+Filters 3–5 are why the measured precision is 99.88% rather than the 25–75%
+published for regex-and-entropy tools. No single one gets there: Luhn alone
+accepts roughly 1 in 10 random numbers of the right length. It is the
+*compounding of independent constraints* that does the work.
+
+## Prefilters
+
+Most detectors are anchored on a literal nothing else uses — `AKIA`, `ghp_`,
+`xoxb-`, `sk-ant-`. Before compiling and running a backtracking regex, the
+scanner asks whether that literal appears in the text at all. On ordinary prose
+the overwhelming majority of the 81 detectors are skipped outright.
+
+This is purely an optimisation and must never change a result, which is not a
+promise worth making without a test behind it: `test/detect.test.js` scans a set
+of samples twice, once with every prefilter stripped, and asserts the findings
+are identical.
+
+Measured: a 46 KB document scanned in ~3.0 ms, about 15 MB/s, with all 81
+detectors enabled.
 
 ## Surfaces
 
@@ -90,6 +147,36 @@ to diff against source, and no post-install scripts.
 The cost is real and accepted: MV3 content scripts cannot be ES modules
 directly, so `content.js` is an async IIFE that dynamic-imports the engine
 from a web-accessible resource.
+
+## Data flow: attachments
+
+The composer is not the only way a secret reaches a provider. Drops and file
+pickers are intercepted in the capture phase alongside paste and submit:
+
+```
+  drop / <input type=file> change
+        │
+        ▼
+  detach the selection      input.files = empty DataTransfer
+        │                   (nothing uploads while we look)
+        ▼
+  for each file
+        ├── binary, or > 4 MB?  ──▶ skipped, reported as skipped
+        └── text-like           ──▶ file.text() → scan()
+        │
+        ▼
+  panel
+        ├── "Attach redacted copies" ──▶ new File([redacted], same name, same type)
+        ├── "Attach as-is"           ──▶ original files restored
+        └── dismiss                  ──▶ selection cleared
+        │
+        ▼
+  input.files = DataTransfer(chosen); re-dispatch change
+```
+
+Replacing the file rather than blocking the upload is the same decision as
+redact-don't-block, applied one layer out: the person still gets to send their
+config and still gets their answer, without the credentials in it.
 
 ## Data flow: paste
 

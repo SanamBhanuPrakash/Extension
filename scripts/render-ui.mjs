@@ -16,19 +16,42 @@
 import { chromium } from 'playwright-core';
 import { createServer } from 'node:http';
 import { readFileSync, readdirSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import { extname, join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const TYPES = { '.html':'text/html', '.js':'text/javascript', '.css':'text/css', '.png':'image/png' };
-const root = join(process.cwd(), 'extension');
+const root = join(dirname(fileURLToPath(import.meta.url)), '..', 'extension');
 const HARNESS = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="/panel.css">
 <style>
-  body{margin:0;height:100vh;background:#0e1117;font:14px ui-sans-serif,system-ui;color:#c9d1d9;
-       display:flex;align-items:flex-end;justify-content:center;padding:0 0 26px}
-  .composer{width:min(720px,90vw);background:#161b22;border:1px solid #30363d;border-radius:14px;padding:12px 14px}
-  textarea{width:100%;min-height:82px;background:transparent;border:0;outline:0;color:inherit;
-           font:14px ui-sans-serif,system-ui;resize:none}
+  :root{color-scheme:dark}
+  body{margin:0;min-height:100vh;background:#0d1117;font:14px/1.6 ui-sans-serif,system-ui;color:#c9d1d9;
+       display:flex;flex-direction:column;align-items:center;padding:28px 0 24px}
+  /* Content behind the panel, so the backdrop blur has something to work on. */
+  .thread{width:min(760px,92vw);flex:1}
+  .msg{margin-bottom:18px;display:flex;gap:12px}
+  .av{width:26px;height:26px;border-radius:7px;flex:none;background:linear-gradient(140deg,#f2a33c,#c4283f)}
+  .av.you{background:linear-gradient(140deg,#4d8df5,#9b5cf6)}
+  .bubble{flex:1}
+  .bubble b{display:block;font-size:12.5px;color:#8b949e;margin-bottom:3px}
+  pre{background:#161b22;border:1px solid #21262d;border-radius:10px;padding:11px 13px;
+      font:12px/1.65 ui-monospace,Menlo,monospace;color:#a5d6ff;overflow-x:auto;margin:9px 0}
+  .composer{width:min(760px,92vw);background:#161b22;border:1px solid #30363d;border-radius:16px;padding:13px 15px}
+  textarea{width:100%;min-height:74px;background:transparent;border:0;outline:0;color:inherit;
+           font:14px/1.6 ui-sans-serif,system-ui;resize:none}
 </style></head><body>
+<div class="thread">
+  <div class="msg"><div class="av you"></div><div class="bubble"><b>You</b>
+    The nightly sync job started failing after we moved the worker to the new cluster.</div></div>
+  <div class="msg"><div class="av"></div><div class="bubble"><b>Assistant</b>
+    That usually points at credentials or network policy. Can you share the worker config and the error?
+    <pre>Error: connect ETIMEDOUT 10.42.0.17:5432
+    at Socket.&lt;anonymous&gt; (/srv/sync/node_modules/pg/lib/client.js:132:11)
+    at Object.onceWrapper (node:events:634:26)</pre>
+    If the database is reachable from the old cluster but not the new one, check the security group first.</div></div>
+  <div class="msg"><div class="av you"></div><div class="bubble"><b>You</b>
+    Sure, one second — pasting the whole env file.</div></div>
+</div>
 <div class="composer"><textarea id="c" placeholder="Message…"></textarea></div>
 <script src="/content.js"></script></body></html>`;
 
@@ -90,8 +113,14 @@ async function shot(name, file, width, dark, prep) {
   const extra = prep ? await prep(page) : '';
   const h = await page.evaluate(() => Math.ceil(document.body.scrollHeight));
   if (file.startsWith('harness')) {
-    // Tight crop on the panel itself; the mock page around it is scaffolding.
-    await page.locator('.chhanni-panel').screenshot({ path: `/tmp/claude-0/${name}.png` });
+    // Crop around the panel with margin, so the backdrop blur is visible
+    // against the content it is actually sitting over.
+    const box = await page.locator('.chhanni-panel').boundingBox();
+    const pad = 46;
+    await page.screenshot({ path: `/tmp/claude-0/${name}.png`, clip: {
+      x: Math.max(0, box.x - pad), y: Math.max(0, box.y - pad),
+      width: box.width + pad * 2, height: box.height + pad * 2,
+    } });
   } else {
     await page.setViewportSize({ width, height: Math.min(h + 8, 2000) });
     await page.screenshot({ path: `/tmp/claude-0/${name}.png` });
@@ -112,9 +141,12 @@ const firePaste = async (page) => {
   return `panel shown, composer="${await page.inputValue('#c')}"`;
 };
 
+await shot('popup-light', 'popup.html', 360, false);
+await shot('popup-dark', 'popup.html', 360, true);
 await shot('panel-dark', 'harness.html', 900, true, firePaste);
 await shot('panel-light', 'harness.html', 900, false, firePaste);
-await shot('options-dark', 'options.html', 780, true, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
+await shot('options-dark', 'options.html', 800, true, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
+await shot('options-light', 'options.html', 800, false, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
 
 // End-to-end: does "Redact and continue" actually clean the composer?
 const page = await browser.newPage({ viewport:{width:900,height:820} });
@@ -125,7 +157,7 @@ await firePaste(page);
 await page.click('.chhanni-primary');
 await page.waitForTimeout(300);
 const final = await page.inputValue('#c');
-const { scan } = await import('./src/detect.js');
+const { scan } = await import('../src/detect.js');
 console.log('\n--- end-to-end redaction ---');
 console.log(final);
 console.log('\nverdict after redaction:', scan(final).verdict);

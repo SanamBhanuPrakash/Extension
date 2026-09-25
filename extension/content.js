@@ -103,7 +103,8 @@
     return node;
   }
 
-  function showPanel({ findings, verdict, title, onRedact, onProceed }) {
+  function showPanel({ findings, verdict, title, onRedact, onProceed, onDismiss,
+                       redactLabel, proceedLabel }) {
     closePanel();
     panel = el('div', `chhanni-panel chhanni-${verdict}`);
     panel.setAttribute('role', 'alertdialog');
@@ -115,7 +116,7 @@
     head.append(el('i', 'chhanni-dot'), el('strong', null, title));
     const close = el('button', 'chhanni-x', '×');
     close.setAttribute('aria-label', 'Dismiss');
-    close.onclick = () => { closePanel(); record('dismissed'); };
+    close.onclick = () => { closePanel(); record('dismissed'); onDismiss?.(); };
     head.appendChild(close);
     panel.appendChild(head);
 
@@ -162,9 +163,10 @@
 
     // Actions
     const actions = el('div', 'chhanni-actions');
-    const redactBtn = el('button', 'chhanni-primary', `Redact ${findings.length} and continue`);
+    const redactBtn = el('button', 'chhanni-primary',
+      redactLabel || `Redact ${findings.length} and continue`);
     redactBtn.onclick = () => { closePanel(); record('redacted'); onRedact(); };
-    const proceedBtn = el('button', 'chhanni-ghost', 'Send as-is');
+    const proceedBtn = el('button', 'chhanni-ghost', proceedLabel || 'Send as-is');
     proceedBtn.onclick = () => { closePanel(); record('sent'); onProceed(); };
     actions.append(redactBtn, proceedBtn);
     panel.appendChild(actions);
@@ -186,7 +188,7 @@
     }
 
     onKey = (e) => {
-      if (e.key === 'Escape') { e.preventDefault(); closePanel(); record('dismissed'); }
+      if (e.key === 'Escape') { e.preventDefault(); closePanel(); record('dismissed'); onDismiss?.(); }
       else if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault(); e.stopImmediatePropagation();
         closePanel(); record('redacted'); onRedact();
@@ -232,6 +234,124 @@
 
   // After "Send as-is" we re-dispatch the key; this stops us catching our own.
   let bypassUntil = 0;
+
+
+  // ═══════════════════════════════════════════════════════════ attachments
+  //
+  // The documented biggest gap in every tool of this kind: people do not only
+  // paste secrets, they attach them. A dragged .env or a downloaded
+  // credentials.json never touches the composer, so a composer-only scanner
+  // sees nothing.
+  //
+  // Text-like attachments are read locally, scanned with the same engine, and —
+  // this is the part no other tool offers — can be replaced in place by a
+  // redacted copy that still carries everything the model needs to help.
+
+  const TEXTUAL = /\.(?:env|json|ya?ml|txt|md|log|csv|tsv|sql|sh|bash|zsh|fish|conf|cfg|ini|toml|properties|pem|key|crt|cer|xml|html?|jsx?|tsx?|mjs|cjs|py|rb|go|java|php|rs|c|cc|cpp|h|hpp|cs|swift|kt|scala|pl|lua|r|tf|tfvars|tfstate|gradle|dockerfile|gitconfig|npmrc|netrc|pgpass|htpasswd)$/i;
+  const MAX_FILE = 4 * 1024 * 1024;
+
+  const isTextual = (file) =>
+    file.size <= MAX_FILE &&
+    (TEXTUAL.test(file.name) ||
+     /^text\//.test(file.type) ||
+     /^application\/(?:json|xml|x-yaml|x-sh|javascript|x-pem-file)/.test(file.type) ||
+     (file.type === '' && !/\.(?:png|jpe?g|gif|webp|avif|pdf|zip|gz|tar|mp[34]|mov|docx?|xlsx?|pptx?)$/i.test(file.name)));
+
+  /** Reads and scans each text-like file. Binary and oversized files are skipped. */
+  async function inspect(files) {
+    const reports = [];
+    for (const file of files) {
+      if (!isTextual(file)) { reports.push({ file, skipped: true, findings: [] }); continue; }
+      let text;
+      try { text = await file.text(); } catch { reports.push({ file, skipped: true, findings: [] }); continue; }
+      if (text.includes('\u0000')) { reports.push({ file, skipped: true, findings: [] }); continue; }
+      const result = scan(text, policy);
+      reports.push({ file, text, findings: result.findings, verdict: result.verdict });
+    }
+    return reports;
+  }
+
+  /** Same name, same type, secrets replaced with stable placeholders. */
+  function redactedCopy(report) {
+    if (!report.findings.length || report.skipped) return report.file;
+    const cleaned = redact(report.text, report.findings).text;
+    return new File([cleaned], report.file.name, {
+      type: report.file.type || 'text/plain',
+      lastModified: report.file.lastModified,
+    });
+  }
+
+  function fileListFrom(files) {
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(f);
+    return dt;
+  }
+
+  let fileBypassUntil = 0;
+
+  /** Shared flow for both drop and file-input selection. */
+  async function guardFiles(files, { onAllow, onCancel }) {
+    const reports = await inspect(files);
+    const all = reports.flatMap((r) => r.findings);
+    if (!all.length) { onAllow(files); return; }
+
+    const dirty = reports.filter((r) => r.findings.length);
+    const names = dirty.map((r) => r.file.name).join(', ');
+
+    showPanel({
+      findings: all,
+      verdict: all.some((f) => f.severity === 'critical') ? 'block' : 'warn',
+      title: all.length === 1
+        ? `${all[0].label} in ${names}`
+        : `${all.length} things in ${dirty.length === 1 ? names : `${dirty.length} attached files`}`,
+      redactLabel: `Attach redacted ${dirty.length === 1 ? 'copy' : 'copies'}`,
+      proceedLabel: 'Attach as-is',
+      onRedact: () => onAllow(reports.map(redactedCopy)),
+      onProceed: () => onAllow(files),
+      onDismiss: onCancel,
+    });
+  }
+
+  document.addEventListener('drop', (e) => {
+    if (policy.mode === 'off' || Date.now() < fileBypassUntil) return;
+    const files = [...(e.dataTransfer?.files || [])];
+    if (!files.length) return;
+
+    const target = e.target;
+    e.preventDefault();
+    e.stopPropagation();
+
+    guardFiles(files, {
+      onAllow: (allowed) => {
+        fileBypassUntil = Date.now() + 2000;
+        target.dispatchEvent(new DragEvent('drop', {
+          dataTransfer: fileListFrom(allowed), bubbles: true, cancelable: true,
+        }));
+      },
+      onCancel: () => {},
+    });
+  }, true);
+
+  document.addEventListener('change', (e) => {
+    const input = e.target;
+    if (policy.mode === 'off' || Date.now() < fileBypassUntil) return;
+    if (!(input instanceof HTMLInputElement) || input.type !== 'file') return;
+    const files = [...(input.files || [])];
+    if (!files.length) return;
+
+    e.stopPropagation();
+    // Detach the selection while we look at it, so nothing uploads underneath us.
+    input.files = fileListFrom([]).files;
+
+    guardFiles(files, {
+      onAllow: (allowed) => {
+        fileBypassUntil = Date.now() + 2000;
+        input.files = fileListFrom(allowed).files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      },
+      onCancel: () => { input.value = ''; },
+    });
+  }, true);
 
   document.addEventListener('keydown', (e) => {
     if (!isSubmitKey(e) || policy.mode === 'off' || Date.now() < bypassUntil) return;

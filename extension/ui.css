@@ -1,55 +1,112 @@
-/* Shared tokens for the extension's own pages (popup, options).
-   The in-page warning panel carries its own copy, because it is injected
-   into someone else's document and must not depend on our stylesheet order. */
+/*
+ * Shared tokens and glass surfaces for the extension's own pages.
+ *
+ * The in-page panel carries its own copy of all of this, because it is
+ * injected into someone else's document and must not depend on our stylesheet
+ * loading or on its cascade position.
+ *
+ * A popup has nothing behind it to blur, so the page paints a soft colour field
+ * first and the cards blur against that. Without it, backdrop-filter on an
+ * extension page is a no-op and the "glass" is just a flat panel.
+ */
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
-  --surface: #f7f8fa;
-  --line: #e4e7ec;
-  --fg: #14181f;
-  --muted: #69717f;
-  --faint: #99a1af;
-  --accent: #c2741d;
-  --critical: #b3243a;
-  --high: #a8620f;
-  --ok: #2e7d52;
-  --radius: 10px;
+  --text: #11151c;
+  --muted: #5c6472;
+  --faint: #8b93a1;
+  --accent: #b8690f;
+  --critical: #c4283f;
+  --high: #9a5a0c;
+  --ok: #1f7a4d;
+  --hairline: rgba(9, 14, 22, .10);
+  --inset: rgba(255, 255, 255, .72);
+  --glass: rgba(252, 253, 255, .70);
+  --glass-strong: rgba(255, 255, 255, .84);
+  --sunken: rgba(9, 14, 22, .045);
+  --field: #0d1117;
+  --page: #f2f4f8;
+  --wash-a: rgba(242, 163, 60, .16);
+  --wash-b: rgba(77, 141, 245, .14);
+  --wash-c: rgba(196, 40, 63, .09);
+  --radius: 14px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-  --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14181f;
-    --surface: #1b2028;
-    --line: #2a303a;
-    --fg: #e8ebf0;
-    --muted: #98a1ae;
-    --faint: #6c7583;
+    --text: #eef1f6;
+    --muted: #a2abb9;
+    --faint: #737c8a;
     --accent: #f2a33c;
-    --critical: #f07178;
-    --high: #e3a44b;
-    --ok: #6cc08b;
+    --critical: #ff7b82;
+    --high: #f0b054;
+    --ok: #5ec489;
+    --hairline: rgba(255, 255, 255, .10);
+    --inset: rgba(255, 255, 255, .10);
+    --glass: rgba(26, 30, 38, .70);
+    --glass-strong: rgba(30, 35, 44, .86);
+    --sunken: rgba(255, 255, 255, .055);
+    --field: #f2f4f8;
+    --page: #0f1319;
+    --wash-a: rgba(242, 163, 60, .13);
+    --wash-b: rgba(77, 141, 245, .12);
+    --wash-c: rgba(196, 40, 63, .10);
   }
 }
 * { box-sizing: border-box; }
+html { background: var(--page); }
 body {
   margin: 0;
-  font: 13px/1.55 var(--sans);
-  color: var(--fg);
-  background: var(--bg);
+  font: 400 13px/1.55 var(--sans);
+  color: var(--text);
   -webkit-font-smoothing: antialiased;
+  position: relative;
+  background: var(--page);
 }
+/* The colour field the glass blurs against. */
+body::before {
+  content: ''; position: fixed; inset: -20%; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(42% 38% at 12% 4%, var(--wash-a), transparent 70%),
+    radial-gradient(46% 42% at 92% 14%, var(--wash-b), transparent 72%),
+    radial-gradient(40% 40% at 48% 96%, var(--wash-c), transparent 72%);
+}
+
+.glass {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  backdrop-filter: blur(28px) saturate(180%);
+  border: 0.5px solid var(--hairline);
+  border-radius: var(--radius);
+  box-shadow:
+    inset 0 1px 0 var(--inset),
+    0 1px 2px rgba(9, 14, 22, .05),
+    0 10px 22px -10px rgba(9, 14, 22, .14);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass { background: var(--glass-strong); }
+}
+
 code, .mono { font-family: var(--mono); }
 .sev-critical { color: var(--critical); }
-.sev-high { color: var(--high); }
-.sev-medium { color: var(--high); }
+.sev-high, .sev-medium { color: var(--high); }
 .sev-low { color: var(--muted); }
+
 button {
-  font: inherit; font-weight: 500; cursor: pointer;
-  border: 1px solid var(--line); border-radius: 7px;
-  background: var(--surface); color: var(--fg); padding: 6px 11px;
+  font: inherit; font-weight: 510; cursor: pointer;
+  border: 0.5px solid var(--hairline); border-radius: 9px;
+  background: var(--glass-strong); color: var(--text); padding: 6px 11px;
+  transition: transform .12s cubic-bezier(.32,.72,0,1), background .15s ease, border-color .15s ease;
 }
 button:hover { border-color: var(--faint); }
-button.primary { background: var(--fg); color: var(--bg); border-color: transparent; }
-button.link { background: none; border: none; color: var(--muted); padding: 0; text-decoration: underline; text-underline-offset: 2px; }
-button.link:hover { color: var(--fg); }
+button:active { transform: scale(.975); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary {
+  background: var(--field); color: var(--page); border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 1px 2px rgba(9,14,22,.2);
+}
+button.link {
+  background: none; border: none; color: var(--muted); padding: 0;
+  text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: .5px;
+}
+button.link:hover { color: var(--text); }

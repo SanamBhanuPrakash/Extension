@@ -32,6 +32,41 @@ would destroy that and make the redacted prompt less useful than the original.
 
 ---
 
+### 3a. Measure, and publish the number
+
+**Context.** Every product in this category claims accuracy and none publish a
+figure. The only public numbers are academic, and they are poor: 25–75%
+precision across nine secret-detection tools.
+
+**Decision.** Ship `bench/` — a seeded, reproducible corpus — print precision
+and recall from one command, and write down what the number does not cover.
+
+**Why.** It is the only claim in this project a stranger can check in thirty
+seconds, and it is the one differentiator an incumbent cannot take by
+out-spending: they would have to publish too.
+
+**Cost.** A self-authored corpus flatters its author. Stated in BENCHMARK.md
+rather than hidden, along with the fact that a check digit can never reach zero
+false positives.
+
+---
+
+### 3b. The benchmark is a gate, not a press release
+
+**Decision.** `test/detect.test.js` fails the build below 99% precision or recall.
+
+**Why.** A number measured once is marketing. A number enforced on every commit
+is a property of the system.
+
+**Cost, learned the hard way.** The GSTIN validator had an off-by-one that made
+it reject every real GSTIN, and the benchmark reported 100% throughout — the
+corpus generator called the same broken function to build its samples. A
+benchmark validates *consistency*, not *correctness*. Known-good real-world
+vectors in the unit tests are what validate correctness. Both are needed, and
+neither substitutes for the other.
+
+---
+
 ### 3. Checksums, not just patterns
 
 **Decision.** Where a format carries its own verification, use it: Luhn,
@@ -119,3 +154,52 @@ never stop a send.
 **Why.** Prompts contain email addresses constantly and almost always
 legitimately. Blocking on them would train users to dismiss the panel without
 reading it, which would break the detectors that matter.
+
+
+---
+
+### 10. Issuer ranges on top of Luhn
+
+**Context.** A 15-digit IMEI was being reported as a payment card. It passed
+Luhn — because IMEIs carry a Luhn check digit too.
+
+**Decision.** A card must also begin in a range some network actually issues,
+*at a length that network actually issues*. 15 digits is a card only if it
+starts 34 or 37.
+
+**Why.** Luhn alone accepts about 1 in 10 random digit strings. One check digit
+buys one order of magnitude; that is all it can buy. The second, independent
+constraint is what makes the detector trustworthy.
+
+**Cost.** A card on an exotic unlisted BIN is missed. The range table is
+deliberately conservative, and that trade is the right way round for a tool that
+gets uninstalled when it is wrong.
+
+---
+
+### 11. Redact the attachment, don't block the upload
+
+**Decision.** For text-like attachments, offer a new `File` with the same name
+and type and the secrets replaced — not merely a refusal.
+
+**Why.** Identical reasoning to redact-don't-block, one layer out. The person
+still gets to send their config and still gets their answer.
+
+**Cost.** Binary files cannot be handled this way, so a screenshot of a
+dashboard passes untouched. Documented as a gap rather than papered over.
+
+---
+
+### 12. Glass, and a fallback for when it is unavailable
+
+**Decision.** Real `backdrop-filter` surfaces, with an `@supports` fallback that
+goes opaque.
+
+**Why.** The panel appears unannounced over someone's work. A translucent layer
+reads as something placed *on* the page rather than part of it — which is
+exactly what it is, and it keeps the host page's content visible underneath so
+the interruption feels like a pause rather than a takeover.
+
+**Cost.** An extension page has nothing behind it to blur, so the popup and
+settings paint a soft colour field for the glass to work against. Without it,
+`backdrop-filter` is a no-op and the effect is just a flat card.

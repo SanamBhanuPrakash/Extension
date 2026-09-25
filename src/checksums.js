@@ -227,3 +227,47 @@ export function jwtPayload(token) {
     return null;
   }
 }
+
+/**
+ * Issuer identification, strictly.
+ *
+ * Luhn alone accepts roughly one in ten random digit strings of the right
+ * length — which is how a 15-digit IMEI ends up reported as a payment card.
+ * A real card also has to begin within a range some network actually issues,
+ * *at a length that network actually issues*. Requiring both turns a 10%
+ * false-positive rate on random numbers into a negligible one.
+ *
+ * Deliberately conservative: a range is listed only where the network
+ * publishes it. Anything unlisted is not a card as far as this engine is
+ * concerned, which costs a little recall on exotic BINs and buys the precision
+ * that makes the detector worth having.
+ *
+ * @returns {string|null} brand name, or null if no network issues this
+ */
+export function cardIssuer(value) {
+  const s = String(value).replace(/[^0-9]/g, '');
+  const n = s.length;
+  const num = (len) => Number(s.slice(0, len));
+
+  if (n === 15) return /^3[47]/.test(s) ? 'Amex' : null;     // Amex only
+  if (n === 14) {
+    if (/^3(?:0[0-5]|095|[689])/.test(s)) return 'Diners';
+    return null;
+  }
+  if (n === 13) return s[0] === '4' ? 'Visa' : null;          // legacy Visa
+  if (n < 13 || n > 19) return null;
+
+  // 16 to 19 digits.
+  if (s[0] === '4') return 'Visa';
+  if (num(2) >= 51 && num(2) <= 55) return 'Mastercard';
+  if (num(4) >= 2221 && num(4) <= 2720) return 'Mastercard';
+  if (/^6011/.test(s) || num(2) === 65) return 'Discover';
+  if (num(3) >= 644 && num(3) <= 649) return 'Discover';
+  if (num(6) >= 622126 && num(6) <= 622925) return 'Discover';
+  if (num(4) >= 3528 && num(4) <= 3589) return 'JCB';
+  if (num(4) === 6521 || num(4) === 6522 || num(3) === 508 || num(2) === 60) return 'RuPay';
+  if (num(2) === 81 || num(2) === 82) return 'RuPay';
+  if (num(2) === 62) return 'UnionPay';
+  if (num(2) === 50 || (num(2) >= 56 && num(2) <= 69)) return 'Maestro';
+  return null;
+}

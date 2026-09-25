@@ -169,10 +169,10 @@ test('the redaction map never carries the secret', () => {
 
 // ------------------------------------------------------------ policy + misc
 test('policy can disable a rule and allowlist a literal', () => {
-  const text = 'contact ops@acme.com';
+  const text = 'contact ops@northwind.co.in';
   assert.ok(has(text, 'email'));
   assert.equal(scan(text, { disabled: ['email'] }).findings.length, 0);
-  assert.equal(scan(text, { allow: ['ops@acme.com'] }).findings.length, 0);
+  assert.equal(scan(text, { allow: ['ops@northwind.co.in'] }).findings.length, 0);
 });
 
 test('findings expose a masked preview and a one-way fingerprint', () => {
@@ -240,7 +240,7 @@ test('every detector claiming proof actually has a validator behind it', async (
   // The number quoted in the README and the UI comes from here; pin it so a
   // new detector cannot quietly inflate the claim.
   const proven = [...RULES_BY_ID.values()].filter((r) => r.proof).length;
-  assert.equal(proven, 9);
+  assert.equal(proven, 24);
 });
 
 test('every rule belongs to exactly one settings category', async () => {
@@ -255,4 +255,83 @@ test('every rule belongs to exactly one settings category', async () => {
   for (const rule of RULES) {
     assert.ok(seen.has(rule.id), `${rule.id} is in no category, so settings would hide it`);
   }
+});
+
+// ------------------------------------------------------------- new detectors
+test('issuer range rejects Luhn-valid numbers no network issues', async () => {
+  const { cardIssuer } = await import('../src/checksums.js');
+  assert.equal(cardIssuer('4242424242424242'), 'Visa');
+  assert.equal(cardIssuer('378282246310005'), 'Amex');
+  assert.equal(cardIssuer('5555555555554444'), 'Mastercard');
+  // A 15-digit number that passes Luhn but is not an Amex is an IMEI, not a card.
+  assert.equal(cardIssuer('490154203237518'), null);
+  assert.equal(cardIssuer('1234567890123452'), null);
+});
+
+test('an IMEI is reported as an IMEI, not as a payment card', () => {
+  const found = scan('device IMEI 490154203237518 reported lost').findings.map((f) => f.ruleId);
+  assert.deepEqual(found, ['imei']);
+});
+
+test('the AWS account number is decoded from the key, offline', () => {
+  const f = scan('AKIAIOSFODNN7EXAMPLE').findings[0];
+  assert.equal(f.ruleId, 'aws_access_key_id');
+  assert.match(f.note, /5810-3995-4779/);
+});
+
+test('an AWS secret key pattern does not swallow the tail of a vendor token', () => {
+  const found = scan('FIGMA=figd_' + 'a1B2c3D4e5'.repeat(4)).findings.map((f) => f.ruleId);
+  assert.ok(found.includes('figma_token'));
+  assert.ok(!found.includes('aws_secret_access_key'));
+});
+
+test('Indian identifiers validate by their published check algorithms', async () => {
+  const { gstin, ifsc, upiVpa } = await import('../src/identifiers.js');
+  assert.ok(gstin('27AAPFU0939F1ZV'));
+  assert.ok(!gstin('27AAPFU0939F1ZX'), 'wrong check character');
+  assert.ok(ifsc('HDFC0001234'));
+  assert.ok(upiVpa('ramesh@okhdfcbank'));
+  assert.ok(!upiVpa('ramesh@gmail.com'), 'a webmail address is not a UPI handle');
+});
+
+test('a JWT signed with alg:none is escalated to critical', () => {
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ sub: 'admin' })).toString('base64url');
+  const f = scan(`${header}.${payload}.`).findings.find((x) => x.ruleId === 'jwt');
+  assert.equal(f.severity, 'critical');
+  assert.match(f.note, /alg:none/);
+});
+
+test('prefilters never change what is found, only how fast', async () => {
+  const { RULES } = await import('../src/rules.js');
+  const samples = [
+    'AKIAIOSFODNN7EXAMPLE', 'ghp_' + 'a'.repeat(36), 'card 4242424242424242',
+    'contact r.iyer@northwind.co.in', 'postgres://u:pw@h/db', 'GSTIN 27AAPFU0939F1ZV',
+  ];
+  for (const text of samples) {
+    const withPrefilter = scan(text).findings.map((f) => f.ruleId);
+    // Re-scan with every prefilter stripped; results must be identical.
+    const saved = RULES.map((r) => r.prefilter);
+    RULES.forEach((r) => { delete r.prefilter; });
+    const without = scan(text).findings.map((f) => f.ruleId);
+    RULES.forEach((r, i) => { if (saved[i]) r.prefilter = saved[i]; });
+    assert.deepEqual(withPrefilter, without, `prefilter changed results for: ${text}`);
+  }
+});
+
+test('the benchmark holds at or above its published figures', async () => {
+  const { buildCorpus } = await import('../bench/corpus.js');
+  let tp = 0, fp = 0, fn = 0;
+  for (const seed of [1, 42, 999, 20260925]) {
+    for (const c of buildCorpus(seed)) {
+      const fired = new Set(scan(c.text).findings.map((f) => f.ruleId));
+      const expected = new Set(c.expect);
+      for (const id of expected) fired.has(id) ? tp++ : fn++;
+      for (const id of fired) if (!expected.has(id)) fp++;
+    }
+  }
+  const precision = tp / (tp + fp);
+  const recall = tp / (tp + fn);
+  assert.ok(precision >= 0.99, `precision regressed to ${(precision * 100).toFixed(2)}%`);
+  assert.ok(recall >= 0.99, `recall regressed to ${(recall * 100).toFixed(2)}%`);
 });

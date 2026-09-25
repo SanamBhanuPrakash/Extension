@@ -86,6 +86,11 @@ export function scan(text, policy = {}) {
 
   for (const rule of RULES) {
     if (disabled.has(rule.id)) continue;
+    // Prefilter: a cheap substring test before an expensive backtracking regex.
+    // Most detectors are anchored on a literal nothing else uses (AKIA, ghp_,
+    // xoxb-), so on ordinary prose the overwhelming majority are skipped
+    // outright. This is what keeps an 81-detector scan cheap on a large paste.
+    if (rule.prefilter && !rule.prefilter.some((needle) => text.includes(needle))) continue;
     // Each scan gets its own regex so lastIndex is never shared across calls.
     const re = new RegExp(rule.pattern.source, rule.pattern.flags);
     let m;

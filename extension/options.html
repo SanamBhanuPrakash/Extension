@@ -13,11 +13,11 @@
   h1 em { font-style: normal; font-weight: 400; color: var(--muted); font-size: 14px; margin-left: 6px; }
   .lede { color: var(--muted); margin: 0 0 26px; }
 
-  section { border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 16px; }
+  section { padding: 17px 19px; margin-bottom: 14px; }
   section > h2 { font-size: 13px; margin: 0 0 3px; font-weight: 600; }
   section > .hint { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
 
-  .choice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; cursor: pointer; border-top: 1px solid var(--line); }
+  .choice { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; cursor: pointer; border-top: 0.5px solid var(--hairline); }
   .choice:first-of-type { border-top: none; }
   .choice input { margin-top: 3px; accent-color: var(--accent); }
   .choice b { font-weight: 500; }
@@ -29,11 +29,11 @@
   .play textarea {
     width: 100%; min-height: 148px; resize: vertical;
     font: 12px/1.6 var(--mono); padding: 10px 11px;
-    border: 1px solid var(--line); border-radius: 8px;
-    background: var(--surface); color: var(--fg);
+    border: 1px solid var(--hairline); border-radius: 8px;
+    background: var(--surface); color: var(--text);
   }
   .play textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  .out { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 10px 11px; min-height: 148px; overflow-y: auto; max-height: 260px; }
+  .out { border: 1px solid var(--hairline); border-radius: 8px; background: var(--surface); padding: 10px 11px; min-height: 148px; overflow-y: auto; max-height: 260px; }
   .out ul { list-style: none; margin: 0; padding: 0; }
   .out li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 12px; }
   .out li b { font-weight: 500; }
@@ -46,7 +46,7 @@
 
   /* detectors */
   .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
-  .toolbar input[type=search] { flex: 1; font: inherit; font-size: 12.5px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--fg); }
+  .toolbar input[type=search] { flex: 1; font: inherit; font-size: 12.5px; padding: 6px 9px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--surface); color: var(--text); }
   .group { margin-bottom: 14px; }
   .group h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin: 0 0 6px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
   .group h3 button { font-size: 10.5px; padding: 1px 6px; text-transform: none; letter-spacing: 0; }
@@ -60,9 +60,9 @@
   .det .proof { font-size: 10px; color: var(--ok); border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; margin-left: auto; white-space: nowrap; }
   .det .shape { font-size: 10px; color: var(--faint); border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; margin-left: auto; white-space: nowrap; }
 
-  textarea#allow { width: 100%; min-height: 76px; font: 12px/1.6 var(--mono); padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); resize: vertical; }
-  footer { color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); padding-top: 16px; margin-top: 24px; }
-  footer strong { color: var(--fg); font-weight: 500; }
+  textarea#allow { width: 100%; min-height: 76px; font: 12px/1.6 var(--mono); padding: 9px 10px; border: 1px solid var(--hairline); border-radius: 8px; background: var(--surface); color: var(--text); resize: vertical; }
+  footer { color: var(--muted); font-size: 12px; border-top: 0.5px solid var(--hairline); padding-top: 16px; margin-top: 22px; }
+  footer strong { color: var(--text); font-weight: 500; }
   #saved { color: var(--ok); font-size: 11.5px; margin-left: 8px; opacity: 0; transition: opacity .2s; }
   #saved.on { opacity: 1; }
 </style>
@@ -75,7 +75,7 @@
   </header>
   <p class="lede">Checks what you paste into an AI chat, on this device, before it leaves.</p>
 
-  <section>
+  <section class="glass">
     <h2>When something is found <span id="saved">saved</span></h2>
     <p class="hint">Chhanni always shows what it found. This controls when it stops you.</p>
     <label class="choice"><input type="radio" name="mode" value="strict">
@@ -86,7 +86,7 @@
       <span><b>Nothing — off</b><small>Detection disabled everywhere.</small></span></label>
   </section>
 
-  <section>
+  <section class="glass">
     <h2>Try it</h2>
     <p class="hint">Type or paste anything. It is scanned here in the page, exactly as it would be in a chat box. Nothing is stored and nothing is sent.</p>
     <div class="play">
@@ -100,7 +100,7 @@
     </div>
   </section>
 
-  <section>
+  <section class="glass">
     <h2>Detectors</h2>
     <p class="hint"><span id="ruleCount"></span> Ones marked <em>proof</em> verify the match with a checksum or by decoding it, rather than trusting its shape.</p>
     <div class="toolbar">
@@ -110,7 +110,7 @@
     <div id="groups"></div>
   </section>
 
-  <section>
+  <section class="glass">
     <h2>Never flag these</h2>
     <p class="hint">One value per line. For sample keys in your own docs and shared test fixtures.</p>
     <textarea id="allow" spellcheck="false" placeholder="sk_test_EXAMPLEKEYFROMOURDOCS00"></textarea>
