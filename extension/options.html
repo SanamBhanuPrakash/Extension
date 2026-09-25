@@ -74,6 +74,11 @@
   footer { color: var(--muted); font-size: 12px; border-top: 0.5px solid var(--hairline); padding-top: 16px; margin-top: 22px; }
   footer strong { color: var(--text); font-weight: 500; }
   #saved { color: var(--ok); font-size: 11.5px; margin-left: 8px; opacity: 0; transition: opacity .2s; }
+  .managed { border-left: 3px solid var(--accent); }
+  .managed h2 { color: var(--accent); }
+  .managed p { margin: 0; }
+  .locked { opacity: .55; pointer-events: none; }
+  .lock-note { font-size: 11px; color: var(--accent); margin-top: 6px; }
   #saved.on { opacity: 1; }
 </style>
 </head>
@@ -84,6 +89,11 @@
     <h1>Chhanni <em>छन्नी — a sieve</em></h1>
   </header>
   <p class="lede">Checks what you paste into an AI chat, on this device, before it leaves.</p>
+
+  <section class="glass managed" id="managedBanner" hidden>
+    <h2>Managed by your organisation</h2>
+    <p class="hint" id="managedText"></p>
+  </section>
 
   <section class="glass">
     <h2>When something is found <span id="saved">saved</span></h2>

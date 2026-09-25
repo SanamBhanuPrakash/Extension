@@ -18,7 +18,18 @@
     "https://chat.deepseek.com/*",
     "https://chat.mistral.ai/*",
     "https://grok.com/*",
-    "https://poe.com/*"
+    "https://poe.com/*",
+    "https://www.phind.com/*",
+    "https://you.com/*",
+    "https://huggingface.co/chat/*",
+    "https://lmarena.ai/*",
+    "https://chat.qwen.ai/*",
+    "https://kimi.com/*",
+    "https://chatglm.cn/*",
+    "https://notebooklm.google.com/*",
+    "https://claude.com/*",
+    "https://console.anthropic.com/*",
+    "https://platform.openai.com/*"
   ],
   "content_scripts": [
     {
@@ -34,7 +45,18 @@
         "https://chat.deepseek.com/*",
         "https://chat.mistral.ai/*",
         "https://grok.com/*",
-        "https://poe.com/*"
+        "https://poe.com/*",
+        "https://www.phind.com/*",
+        "https://you.com/*",
+        "https://huggingface.co/chat/*",
+        "https://lmarena.ai/*",
+        "https://chat.qwen.ai/*",
+        "https://kimi.com/*",
+        "https://chatglm.cn/*",
+        "https://notebooklm.google.com/*",
+        "https://claude.com/*",
+        "https://console.anthropic.com/*",
+        "https://platform.openai.com/*"
       ],
       "js": [
         "content.js"
@@ -76,5 +98,11 @@
     "32": "icons/icon-32.png",
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
-  }
+  },
+  "storage": {
+    "managed_schema": "managed-schema.json"
+  },
+  "optional_host_permissions": [
+    "https://*/*"
+  ]
 }

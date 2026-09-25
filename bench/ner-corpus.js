@@ -217,6 +217,65 @@ Ship to: Unit 12, 88 Collins Street, Melbourne 3000.`,
     names: ['Jae-won Park'],
     addresses: ['Unit 12, 88 Collins Street, Melbourne 3000'],
   },
+  // ── scripts without case ──────────────────────────────────────────────
+  // Capitalisation is a Latin-shaped assumption. These documents exist so the
+  // claim "works for names in other scripts" is measured rather than asserted.
+  {
+    id: 'nonlatin-devanagari',
+    text: `नमस्ते, मैंने अजिता से बात की। वह कल आएंगी।
+
+Regards,
+अस्मिता`,
+    names: ['अजिता', 'अस्मिता'], addresses: [],
+  },
+  {
+    id: 'nonlatin-arabic',
+    text: `تحدثت مع اروي أمس بخصوص التجديد.
+Please contact بتول for the invoice details.`,
+    names: ['اروي', 'بتول'], addresses: [],
+  },
+  {
+    id: 'nonlatin-hebrew',
+    text: `Spoke to אביה yesterday about the renewal.
+She said the contract needs re-signing.`,
+    names: ['אביה'], addresses: [],
+  },
+  {
+    id: 'nonlatin-cyrillic',
+    text: `Regards, Јаворка
+
+Она подтвердила заказ вчера.`,
+    names: ['Јаворка'], addresses: [],
+  },
+  {
+    id: 'nonlatin-cjk',
+    text: `Spoke to 七海 about the renewal.
+Also looped in 가온 from the Seoul team.`,
+    names: ['七海', '가온'], addresses: [],
+  },
+  {
+    id: 'nonlatin-thai',
+    text: `Spoke to กนกวรรณ about the invoice last week.`,
+    names: ['กนกวรรณ'], addresses: [],
+  },
+  {
+    id: 'neg-nonlatin-han',
+    text: `这个系统的配置文件已经损坏了，请重新部署服务器。
+数据库连接超时，检查网络设置和防火墙规则。`,
+    names: [], addresses: [],
+  },
+  {
+    id: 'neg-nonlatin-cyrillic',
+    text: `Сервер не отвечает на запросы. Проверьте конфигурацию базы данных
+и перезапустите службу. Логи находятся в каталоге приложения.`,
+    names: [], addresses: [],
+  },
+  {
+    id: 'neg-nonlatin-devanagari',
+    text: `यह एक सामान्य वाक्य है जिसमें कोई नाम नहीं है।
+कृपया सेवा को पुनः आरंभ करें और लॉग देखें।`,
+    names: [], addresses: [],
+  },
   {
     id: 'mixed-signature',
     text: `Let me know if that works.

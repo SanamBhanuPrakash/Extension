@@ -90,6 +90,16 @@ function splitRow(line, delimiter) {
 const clean = (s) => s.trim().replace(/^["']|["']$/g, '');
 
 /**
+ * How many rows are split into cells.
+ *
+ * A 50,000-row export is characterised just as well by its first two thousand
+ * rows, and splitting all of it costs a browser tab. The reported row count is
+ * still the true one — it is counted cheaply, without splitting — because the
+ * count is the finding.
+ */
+const MAX_ROWS_PROCESSED = 2000;
+
+/**
  * Finds the delimiter that produces the most consistent column count across
  * the most lines. Consistency is the signal that this is a table rather than
  * prose that happens to contain commas.
@@ -141,13 +151,36 @@ export function detectTable(text, probe) {
   const shape = detectShape(working);
   if (!shape) return null;
 
-  const grid = working
-    .map((l) => splitRow(l, shape.delimiter).map(clean))
-    .filter((cells) => cells.length === shape.cols);
+  // Offsets are carried per row, by position.
+  //
+  // An earlier version keyed them by the line's TEXT, which silently collapsed
+  // every identical row to one entry — so a 5,000-row export of repeated rows
+  // pointed all of its findings at the same offset.
+  const rows = [];
+  let totalRows = 0;
+  {
+    let from = 0;
+    for (const line of working) {
+      const at = text.indexOf(line, from);
+      if (at >= 0) from = at + line.length;
+      if (rows.length >= MAX_ROWS_PROCESSED) {
+        // Past the cap, only count: a cheap delimiter tally is enough to know
+        // the row belongs to the table.
+        let n = 1;
+        for (let i = 0; i < line.length; i++) if (line[i] === shape.delimiter) n++;
+        if (n === shape.cols) totalRows++;
+        continue;
+      }
+      const cells = splitRow(line, shape.delimiter);
+      if (cells.length === shape.cols) { rows.push({ line, cells, start: at }); totalRows++; }
+    }
+  }
+  const grid = rows.map((r) => r.cells.map(clean));
   if (grid.length < 3) return null;
 
   const header = looksLikeHeader(grid[0]) ? grid[0] : null;
   const body = header ? grid.slice(1) : grid;
+  const bodyRows = header ? rows.slice(1) : rows;
   if (body.length < 2) return null;
 
   // Sample rather than scan every cell: a 50,000-row paste must not stall the
@@ -198,9 +231,37 @@ export function detectTable(text, probe) {
   const personalColumns = columns.filter((col) => col.kind && PERSONAL.has(col.kind));
   if (!personalColumns.length) return null;
 
+  /**
+   * Where each value in a personal column sits in the original text.
+   *
+   * This is what makes a bulk paste redactable. A `phone` column's values are
+   * phone numbers because the column says so — read alone, each one is just
+   * ten digits, and the value-level rule correctly refuses to guess.
+   */
+  function cellSpans(limit = 1200) {
+    const out = [];
+    for (const col of personalColumns) {
+      for (let r = 0; r < bodyRows.length && out.length < limit; r++) {
+        const raw = bodyRows[r].cells[col.index];
+        if (!raw) continue;
+        const value = clean(raw);
+        if (!value || value.length < 3) continue;
+        const lineStart = bodyRows[r].start;
+        if (lineStart === undefined || lineStart < 0) continue;
+        const within = bodyRows[r].line.indexOf(value);
+        if (within < 0) continue;
+        out.push({ start: lineStart + within, end: lineStart + within + value.length, value, kind: col.kind, label: col.label });
+      }
+    }
+    return out;
+  }
+
   return {
-    rows: body.length,
+    // The true row count, including rows past the processing cap.
+    rows: header ? totalRows - 1 : totalRows,
+    processedRows: body.length,
     cols: shape.cols,
+    cellSpans,
     delimiterName: isMarkdown ? 'markdown table' : shape.name,
     hasHeader: Boolean(header),
     columns,

@@ -23,7 +23,7 @@
 /** Currency figures, for the signals that only matter next to a number. */
 const MONEY = /(?:[$£€₹¥]\s?[\d,.]+\s?(?:k|m|bn|b|mn|cr|crore|lakh|lakhs|million|billion)?|\b[\d,.]+\s?(?:k|m|bn|mn|cr|crore|lakh|lakhs|million|billion)\b)/i;
 
-import { isBenign } from './negatives.js';
+import { isBenign, isCodeIdentifier } from './negatives.js';
 
 const near = (text, index, window, re) =>
   re.test(text.slice(Math.max(0, index - window), index + window));
@@ -43,7 +43,7 @@ export const CONTEXT_RULES = [
     prefilter: ['CONFIDENTIAL', 'Confidential', 'confidential', 'INTERNAL', 'Internal',
       'PROPRIETARY', 'Proprietary', 'RESTRICTED', 'Restricted', 'DO NOT'],
     // Longest alternatives first; the bare word is last and gated below.
-    pattern: /\b(strictly confidential|company confidential|confidential (?:and proprietary|information)|proprietary and confidential|internal use only|internal only|for internal (?:use|distribution)|do not (?:distribute|forward|share|circulate)|commercially sensitive|restricted[- ]confidential|classified|confidential)\b/gi,
+    pattern: /\b(strictly confidential|company confidential|confidential (?:and proprietary|information)|proprietary and confidential|internal use only|internal only|for internal (?:use|distribution)|do not (?:distribute|forward|share|circulate)|commercially sensitive|restricted[- ]confidential|confidential)\b/gi,
     /**
      * A bare "confidential" is the most common marking there is, and also a
      * perfectly ordinary English word. It counts only when it reads as a
@@ -88,7 +88,7 @@ export const CONTEXT_RULES = [
     advisory: true,
     audience: 'executive',
     prefilter: ['non-public', 'nonpublic', 'non public', 'blackout', 'Blackout', 'insider', 'Insider', 'embargo', 'Embargo'],
-    pattern: /\b(material non[- ]?public information|\bMNPI\b|inside information|insider (?:list|trading|information)|blackout period|closed period|pre[- ]announcement|under embargo|earnings (?:release|call) draft|unannounced (?:results|acquisition|merger))\b/gi,
+    pattern: /\b(material non[- ]?public information|\bMNPI\b|inside information|insider (?:list|trading|information)|blackout period|closed period|pre[- ]announcement|earnings (?:release|call) draft|unannounced (?:results|acquisition|merger))\b/gi,
     note: 'Handling of inside information is regulated (SEC Reg FD, SEBI PIT Regulations, UK MAR). Disclosure to an uncontrolled third party is the risk.',
   },
   {
@@ -136,7 +136,9 @@ export const CONTEXT_RULES = [
     audience: 'healthcare',
     prefilter: ['diagnos', 'Diagnos', 'patient', 'Patient', 'prescri', 'Prescri', 'medical record',
       'ICD-', 'mg ', 'treatment', 'Treatment', 'symptom'],
-    pattern: /\b(diagnos(?:is|ed with|tic report)|patient (?:record|history|id|name|chart)|medical (?:record|history|report)|prescri(?:bed|ption)|ICD-1[01][ -]?[A-Z][0-9]{2}|treatment plan|clinical notes?|lab results?|blood (?:test|report)|symptoms? of)\b/gi,
+    // `diagnosis` needs to be doing something: "Diagnosis/" is a build
+    // directory in a .gitignore, not a medical record.
+    pattern: /\b(diagnos(?:ed with|is of|is is|is was|tic report)|patient (?:record|history|id|name|chart)|medical (?:record|history|report)|prescri(?:bed|ption for)|ICD-1[01][ -]?[A-Z][0-9]{2}|treatment plan|clinical notes?|lab results?|blood (?:test|report)|symptoms? of)\b/gi,
     note: 'Health data is a special category under GDPR Article 9, sensitive personal data under the DPDP Act, and PHI under HIPAA. The bar for disclosure is higher than for ordinary personal data.',
   },
   {
@@ -148,6 +150,15 @@ export const CONTEXT_RULES = [
     audience: 'security',
     prefilter: ['CVE-', 'breach', 'Breach', 'zero-day', 'zero day', 'ransom', 'Ransom', 'incident report', 'compromise'],
     pattern: /\b(CVE-\d{4}-\d{4,7}|data breach|security incident|incident report|zero[- ]day|ransomware|indicators? of compromise|\bIOCs?\b|unpatched vulnerability|active exploit)\b/gi,
+    /**
+     * A CVE identifier on its own is public information — every changelog
+     * carries them. It is incident detail only while the issue is still open.
+     */
+    validate: (m, ctx) => {
+      if (!/^CVE-/i.test(m)) return true;
+      const around = ctx.text.slice(Math.max(0, ctx.index - 140), ctx.index + 140);
+      return /\b(?:unpatched|unfixed|unresolved|not yet (?:patched|fixed|public|disclosed)|still (?:open|vulnerable)|active(?:ly)? exploit|in the wild|embargo|pre[- ]disclosure|zero[- ]day)\b/i.test(around);
+    },
     note: 'Unremediated vulnerability detail is useful to an attacker and is usually under embargo until a fix ships.',
   },
   {
@@ -163,8 +174,18 @@ export const CONTEXT_RULES = [
     // the rest of the URL.
     pattern: /\b(?:pass(?:word|code)?|pwd|login|log ?in|credentials?|PIN)\s*(?:is|are|=|:)\s*["'`]?([^\s"'`,;]{6,64})["'`]?/gi,
     group: 1,
+    /**
+     * Rejects code as well as placeholders. Scanning 10,472 real source files
+     * found this rule matching `password: urlPassword`,
+     * `credentials: isCredentialsSupported` and
+     * `password = utils.getSafeProp(configAuth, 'password')` — JavaScript, not
+     * passwords. See isCodeIdentifier for why camelCase alone is the test and
+     * a mere case change is not.
+     */
     validate: (m) => !/^(?:is|the|a|an|to|for|and|reset|change|manager|policy|protected|field|less|hash|hashing|expired|incorrect|invalid|required|strength|rules?|here|above|below|attached|shared|same|new|old|your|my|our|their)$/i.test(m)
-      && !/^[<{[@]/.test(m) && /[^a-z]/.test(m) && !isBenign(m, { placeholder: true }),
+      && !/^[<{[@]/.test(m) && /[^a-z]/.test(m)
+      && !isBenign(m, { placeholder: true })
+      && !isCodeIdentifier(m),
     note: 'A password written into a sentence is still a password.',
   },
   {

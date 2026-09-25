@@ -65,6 +65,8 @@ export const REGIME_MAP = {
   compensation_data: [G('Art. 4(1)', 'personal data about identifiable employees'), D('S. 2(t)', 'personal data')],
   deal_material: [{ regime: 'Contract', ref: 'NDA / confidentiality undertaking', what: 'typically restricted to named recipients' }],
 
+  prompt_injection: [{ regime: 'OWASP GenAI', ref: 'LLM01 Prompt Injection', what: 'untrusted content carrying instructions to the model' }],
+
   // Credentials
   aws_access_key_id: [{ regime: 'SOC 2 / ISO 27001', ref: 'A.9 access control', what: 'credential disclosure is a reportable control failure' }],
   private_key_block: [{ regime: 'SOC 2 / ISO 27001', ref: 'A.10 cryptography', what: 'key material disclosure' }],

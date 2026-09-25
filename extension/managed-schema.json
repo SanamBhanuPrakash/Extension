@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Chhanni managed policy",
+  "description": "Organisation policy for Chhanni, delivered through the browser's own enterprise policy channel (Windows GPO, macOS profiles, Chrome Enterprise, Firefox policies.json). No network request is involved: the browser hands these values to the extension locally, which is why this feature exists at all.",
+  "type": "object",
+  "properties": {
+    "mode": {
+      "title": "Interruption level",
+      "description": "strict stops for everything found; warn stops for credentials and identifiers; off disables detection.",
+      "type": "string",
+      "enum": ["strict", "warn", "off"]
+    },
+    "lockMode": {
+      "title": "Prevent users changing the interruption level",
+      "type": "boolean"
+    },
+    "requiredDetectors": {
+      "title": "Detectors that cannot be switched off",
+      "description": "Rule ids, as printed by `chhanni rules`.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "disabled": {
+      "title": "Detectors switched off for everyone",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "allow": {
+      "title": "Values never flagged",
+      "description": "Shared test fixtures and sample keys that appear in internal documentation.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "codenames": {
+      "title": "Internal project codenames",
+      "description": "Words that should be treated as confidential when they appear in a prompt. Nothing leaves the device; this list is matched locally.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "watchResponses": {
+      "title": "Inspect assistant replies as well as prompts",
+      "type": "boolean"
+    },
+    "message": {
+      "title": "Message shown in settings",
+      "description": "One line explaining the policy, e.g. who to contact about it.",
+      "type": "string"
+    }
+  }
+}

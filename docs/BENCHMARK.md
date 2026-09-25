@@ -10,7 +10,7 @@ seed 20260925 · 424 cases · 241 positive · 183 hard negative
   recall      100.0%   0 missed
   F1          100.0%
 
-  46,206 byte document scanned in 5.7ms (8.2 MB/s), 94 detectors
+  46,206 byte document scanned in 3.2ms (14.3 MB/s), 95 detectors
 ```
 
 ## Why this file exists
@@ -69,14 +69,69 @@ are annotated documents, not generated strings.
 $ node bench/ner.js
 25 annotated documents · 10 of them hard negatives
 
-  names      precision 94.6%   recall 100.0%   F1 97.2%
+  names      precision 97.8%   recall 100.0%   F1  98.9%
   addresses  precision 100.0%  recall 100.0%   F1 100.0%
 ```
+
+34 documents in **eight scripts** — Latin, Devanagari, Arabic, Hebrew, Thai,
+Han, Hangul and Cyrillic — 13 of them hard negatives.
 
 The classifier underneath the name detector scores **F1 71.7%** on held-out
 tokens, and that ceiling is real — see [NER.md](NER.md). The pipeline scores
 97.2% because structural context, not character evidence, is what settles
 whether a capitalised word is a person.
+
+## Real code — the measurement that mattered most
+
+A self-authored corpus flatters its author. `bench/wild.js` scans public
+repositories nobody wrote for this benchmark: **10,472 files, 23.4 MB** from
+express, flask, axios, prettier and github/gitignore.
+
+The first run produced **601 findings — one every 17 files.** Almost all were
+wrong, and *not one of them* appeared in the synthetic corpus, which was
+simultaneously reporting 100%.
+
+```console
+$ node bench/wild.js /path/to/checkouts
+  total
+    10,472 files, 23.4 MB of real source
+    129 findings — one every 81 files
+```
+
+Seven false-positive classes, each found only by looking at real code:
+
+| What fired | On what | Why it was wrong |
+|---|---|---|
+| `phone_india` ×411 | a Prettier formatting fixture of arbitrary integers | a bare ten-digit number is not a phone number |
+| `credential_in_prose` | `password: urlPassword`, `credentials: isCredentialsSupported` | that is JavaScript, not a password |
+| `prompt_injection` | a **.gitignore** explaining "ignore rules" | the imperative had no target |
+| `prompt_injection` | a threat model saying "leak secrets" | descriptive prose, no destination |
+| zero-width detection | Devanagari, Persian and emoji text | ZWJ and ZWNJ are *required* there |
+| `payment_card` | `123 456 789 123 456 789…` | a 15-digit window starting `34` that passed Luhn by chance |
+| `classification_marking` | "how every comment was **classified**" | a verb, not a marking |
+
+**601 → 129, one every 81 files.** What remains: 103 email addresses in
+`CODE_OF_CONDUCT` and `AUTHORS` files (correct — they are email addresses), 23
+documentation passwords indistinguishable from real ones, 2 injection edge
+cases, and one genuine private key in a `.pem` test fixture.
+
+Every fix is locked behind a test that uses the exact string found in the wild.
+
+## The third-party datasets, and why they are not here
+
+[SecretBench](https://arxiv.org/pdf/2303.06729) (818 repositories, 97,479
+candidates, 15,084 labelled true) and FPSecretBench (the false positives nine
+tools reported on it) would make this claim independent.
+
+**Neither can be run here.** Both require a signed data-protection agreement
+with the authors and access through Google BigQuery, because they contain live
+credentials and committers' email addresses. That is a reasonable restriction
+and not one to route around.
+
+So `bench/secretbench.js` exists and the data does not. It parses the BigQuery
+CSV export and scores against it; the header of that file has the exact steps.
+Expect the number to be lower than the figures above. Publishing that drop is
+the entire point of running it.
 
 ## How the corpus is built
 
@@ -103,6 +158,31 @@ a lie:
   `Authorization: Bearer <your token here>`
 - prose that discusses credentials without containing one, and a plain
   TypeScript stack trace
+
+## Speed
+
+| | |
+|---|---|
+| 46 KB, 95 detectors + tables + prose + injection | **3.2 ms (14.3 MB/s)** |
+| 5,000 × 60 export | 504 ms (was 3,346 ms) |
+| Prose corpus, 105 KB | 17.9 ms |
+
+Four optimisations, each measured:
+
+1. **A single-pass shape gate.** Twenty detectors have no literal to prefilter
+   on, because their patterns are pure shape. One walk of the string yields the
+   longest digit, uppercase, alphanumeric and base64 runs; a pattern needing
+   thirteen consecutive digits never runs on a document whose longest run is
+   four.
+2. **Aho–Corasick** for the literal prefilter: one O(n) pass instead of ~250
+   `String.includes` passes.
+3. **Regexes compiled once** at module load, not 95 times per scan.
+4. **Bounded table processing** — 2,000 rows split, the true count still
+   reported.
+
+An optimisation that can change a result is a bug, so two tests assert
+equivalence: findings are identical with every prefilter stripped, and the
+automaton returns exactly what `includes()` would.
 
 ## Where the precision comes from
 

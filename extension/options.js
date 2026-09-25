@@ -1,16 +1,44 @@
 import { RULES, RULES_BY_ID, CATEGORIES } from './engine/rules.js';
 import { scan } from './engine/detect.js';
 import { redact } from './engine/redact.js';
+import { mergePolicy } from './engine/managed.js';
 
 const DEFAULTS = { mode: 'warn', disabled: [], allow: [] };
 const $ = (id) => document.getElementById(id);
 
 const stored = await chrome.storage.sync.get('policy');
-const policy = { ...DEFAULTS, ...(stored.policy || {}) };
+const userPolicy = { ...DEFAULTS, ...(stored.policy || {}) };
+
+// Organisation policy arrives through the browser's own enterprise channel —
+// GPO, a macOS profile, Chrome Enterprise, Firefox policies.json. It is a
+// local read; nothing is fetched.
+let managed = null;
+try {
+  const m = await chrome.storage.managed.get(null);
+  if (m && Object.keys(m).length) managed = m;
+} catch { /* unmanaged install */ }
+
+const policy = mergePolicy(userPolicy, managed);
+
+if (policy.managed?.active) {
+  const banner = $('managedBanner');
+  banner.hidden = false;
+  const bits = [];
+  if (policy.managed.locked) bits.push('the interruption level is set by policy');
+  if (policy.managed.required.length) bits.push(`${policy.managed.required.length} detector${policy.managed.required.length === 1 ? '' : 's'} cannot be switched off`);
+  if (policy.managed.codenameCount) bits.push(`${policy.managed.codenameCount} internal codenames are treated as confidential`);
+  $('managedText').textContent = `${policy.managed.message || 'Some settings are managed centrally.'}${bits.length ? ` Here, ${bits.join(', ')}.` : ''} Nothing is reported back \u2014 policy is delivered by your browser, not fetched over the network.`;
+  if (policy.managed.locked) {
+    document.querySelectorAll('input[name=mode]').forEach((i) => { i.disabled = true; });
+    document.querySelector('.choice')?.closest('section')?.classList.add('locked');
+  }
+}
 
 async function save(patch) {
   Object.assign(policy, patch);
-  await chrome.storage.sync.set({ policy });
+  // Only the user's own settings are written back; policy is not ours to edit.
+  const { managed: _managed, codenames: _codenames, ...own } = policy;
+  await chrome.storage.sync.set({ policy: own });
   const el = $('saved');
   el.classList.add('on');
   setTimeout(() => el.classList.remove('on'), 1200);
@@ -65,6 +93,11 @@ function renderGroups(filter = '') {
       const box = document.createElement('input');
       box.type = 'checkbox';
       box.checked = !policy.disabled.includes(rule.id);
+      if (policy.managed?.required?.includes(rule.id)) {
+        box.disabled = true;
+        box.title = 'Required by your organisation\u2019s policy.';
+        label.style.opacity = '.7';
+      }
       box.onchange = () => {
         const set = new Set(policy.disabled);
         box.checked ? set.delete(rule.id) : set.add(rule.id);

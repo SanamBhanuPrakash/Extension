@@ -257,3 +257,92 @@ difference between a tool that feels instant and one people disable.
 **Cost.** ~80 lines of data structure to maintain, and a test asserting the
 automaton returns exactly what `includes()` would — an optimisation that can
 change results is a bug, not an optimisation.
+
+---
+
+### 16. Measure against code nobody wrote for you
+
+**Context.** The generated corpus reported 100% precision. It had been
+reporting 100% for three versions.
+
+**Decision.** `bench/wild.js`: scan public repositories — 10,472 files of
+express, flask, axios, prettier, github/gitignore — and count how often the
+engine speaks.
+
+**What happened.** **601 findings. One every 17 files.** Seven distinct
+false-positive classes, *none* of which the synthetic corpus could see:
+`phone_india` matching 411 arbitrary integers in a formatting fixture,
+`credential_in_prose` matching JavaScript identifiers, `prompt_injection`
+flagging a **.gitignore** that explained "ignore rules", and zero-width
+detection flagging Devanagari and emoji.
+
+**Why it matters more than the benchmark.** A self-authored corpus tests the
+cases its author imagined. Real code contains the cases nobody imagined, and
+those are the ones that get an extension uninstalled. 601 → 129 after the
+fixes, each locked behind a test using the exact string found in the wild.
+
+**Cost.** None worth mentioning, which is the uncomfortable part: this should
+have existed from the first version.
+
+---
+
+### 17. A gazetteer for scripts without case, a classifier for scripts with it
+
+**Context.** The name classifier assumed capitalisation. Arabic, Hebrew,
+Devanagari, Thai, Han, Hangul and the kana have no case at all, so the single
+strongest feature in the pipeline did not exist for most of the world.
+
+**Decision.** An exact gazetteer of 10,237 names for uncased scripts; the
+classifier for cased ones.
+
+**Why a gazetteer is right here rather than a fallback.** Where there is no
+capitalisation to lean on, an exact match is the strongest evidence available.
+The character inventory is small and names are short. Dense scripts (Han,
+Thai, kana) have no token boundaries either, so they use a sliding window and
+additionally require context.
+
+**Cost.** A gazetteer cannot generalise. A Devanagari name nobody wrote down is
+missed, and Devanagari coverage is thin — 93 entries from a test-data library
+is not a serious source, and is named as such.
+
+**A correction it forced.** The classifier's negatives are Latin-only, so it
+had never seen an ordinary Cyrillic word and scored every one as a name —
+including the verb `Говорил`. Cased non-Latin scripts now require a gazetteer
+hit or real context too.
+
+---
+
+### 18. Enterprise policy through the browser, not through a server
+
+**Decision.** Organisation policy arrives via `chrome.storage.managed` — GPO,
+macOS profiles, Chrome Enterprise, Firefox `policies.json`.
+
+**Why.** The obvious way to sell this to a company is a console: rules down,
+findings up. The second half would make every claim in the threat model false.
+Browsers already solved this, locally, with no permission beyond the `storage`
+one already held. A CISO gets consistent rules; the default install stays
+silent. Those two are usually sold as a trade-off and are not one.
+
+**Cost.** No fleet dashboard, which is exactly what an enterprise buyer will
+ask for first.
+
+---
+
+### 19. One walk of the string
+
+**Context.** Twenty detectors have no literal to prefilter on because their
+patterns are pure shape, so they ran unconditionally — and several are the most
+expensive regexes in the ruleset.
+
+**Decision.** A single pass yielding the longest digit, uppercase, alphanumeric
+and base64 runs, plus the Aho–Corasick literal set. Every gate afterwards is an
+integer comparison.
+
+**Why.** 46 KB went from 11.1 ms to 3.2 ms *while gaining* the prose pass and
+injection detection. In a content script, latency is not a benchmark number —
+it is the difference between a tool that feels instant and one people disable.
+
+**Cost, and the bug it caused.** `base64Run` had to exist separately from
+`alnumRun`: an AWS secret is forty base64 characters including `/` and `+`, and
+gating on the alphanumeric run discarded every real one. The benchmark caught
+it immediately, which is the argument for having the benchmark be a gate.

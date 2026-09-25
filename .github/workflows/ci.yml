@@ -1,0 +1,59 @@
+# Every claim this project makes is a number, and every number is a gate.
+#
+# The benchmarks are not reports that someone reads once — they fail the build.
+# Precision below 99% on credentials, or below 90% on names in prose, is a
+# broken build, not a note in a changelog.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['20.x', '22.x', '24.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # No install step: there are no runtime or test dependencies.
+      - name: Tests
+        run: node --test test/*.test.js
+
+      - name: Credential benchmark
+        run: node bench/run.js --no-color
+
+      - name: Prose benchmark
+        run: node bench/ner.js --no-color
+
+      - name: Benchmark across ten seeds
+        run: |
+          for seed in 1 7 42 999 20260925 31337 8675309 2718281 1414213 77777; do
+            node bench/run.js --seed "$seed" --json > /dev/null || exit 1
+          done
+
+      - name: Build both store packages
+        run: node scripts/build.js
+
+      - name: Extension must not be able to reach the network
+        run: |
+          if grep -rnE '(^|[^.[:alnum:]_])fetch[[:space:]]*\(|new[[:space:]]+(XMLHttpRequest|WebSocket|EventSource)[[:space:]]*\(|\.sendBeacon[[:space:]]*\(' \
+               --include='*.js' src extension --exclude-dir=engine; then
+            echo "::error::a shipped module references a network API"
+            exit 1
+          fi
+          node -e "
+            const m = require('./dist/chrome/manifest.json');
+            if (JSON.stringify(m.permissions) !== '[\"storage\"]') {
+              console.error('permissions changed:', m.permissions); process.exit(1);
+            }
+          "
+
+      - name: Chhanni scans itself
+        run: node bin/chhanni.js scan src bin bench scripts --quiet --no-color || true

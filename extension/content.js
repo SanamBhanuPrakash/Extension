@@ -14,6 +14,8 @@
   const url = (p) => chrome.runtime.getURL(p);
   const { scan, groupFindings } = await import(url('engine/detect.js'));
   const { exposureScore, BAND_TEXT } = await import(url('engine/risk.js'));
+  const { isComposer } = await import(url('engine/composer.js'));
+  const { mergePolicy } = await import(url('engine/managed.js'));
   const { redact } = await import(url('engine/redact.js'));
   const store = await import(url('store.js'));
 
@@ -28,25 +30,35 @@
 
   const DEFAULTS = { mode: 'warn', disabled: [], allow: [] };
   let policy = DEFAULTS;
-  try {
-    const stored = await chrome.storage.sync.get('policy');
-    if (stored.policy) policy = { ...DEFAULTS, ...stored.policy };
-  } catch { /* first run; defaults are fine */ }
-  chrome.storage.onChanged?.addListener((c) => {
-    if (c.policy?.newValue) policy = { ...DEFAULTS, ...c.policy.newValue };
-  });
+
+  /**
+   * User settings, with any organisation policy merged over them.
+   * `storage.managed` is populated by the browser from enterprise policy —
+   * GPO, a macOS profile, Chrome Enterprise, Firefox policies.json. It is a
+   * local read; no request leaves the machine.
+   */
+  async function loadPolicy() {
+    let user = DEFAULTS;
+    try {
+      const stored = await chrome.storage.sync.get('policy');
+      if (stored.policy) user = { ...DEFAULTS, ...stored.policy };
+    } catch { /* first run; defaults are fine */ }
+    let managed = null;
+    try { managed = (await chrome.storage.managed.get(null)) || null; } catch { /* unmanaged */ }
+    policy = mergePolicy(user, managed && Object.keys(managed).length ? managed : null);
+  }
+  await loadPolicy();
+  chrome.storage.onChanged?.addListener(() => { loadPolicy().catch(() => {}); });
 
   // ------------------------------------------------------------- composer
-  const COMPOSER = [
-    '#prompt-textarea',
-    'div[contenteditable="true"].ProseMirror',
-    'div[contenteditable="true"][role="textbox"]',
-    'rich-textarea div[contenteditable="true"]',
-    'textarea[placeholder]',
-    'textarea',
-  ].join(',');
-
-  const isEditable = (el) => el && (el.tagName === 'TEXTAREA' || el.isContentEditable);
+  //
+  // Identified by shape rather than by a hostname list. A new AI product ships
+  // every week and a hand-maintained list is always behind — worse, the gap is
+  // invisible, because the extension looks installed while watching nothing.
+  const isEditable = (el) => {
+    if (!el || (el.tagName !== 'TEXTAREA' && !el.isContentEditable)) return false;
+    try { return isComposer(el); } catch { return true; }
+  };
   const readComposer = (el) => (el.tagName === 'TEXTAREA' ? el.value : el.innerText);
 
   /**
@@ -128,7 +140,7 @@
    * whoever wants it.
    */
   function showPanel({ result, title, onRedact, onProceed, onDismiss,
-                       redactLabel, proceedLabel }) {
+                       redactLabel, proceedLabel, unread }) {
     closePanel();
     const { risk, band, table, groups, findings, regimeNames } = result;
     const verdict = result.verdict;
@@ -211,6 +223,10 @@
     if (panel.dataset.alsoText) {
       panel.appendChild(el('div', 'chhanni-also', panel.dataset.alsoText));
     }
+    if (unread && unread.length) {
+      panel.appendChild(el('div', 'chhanni-also',
+        `Not inspected: ${unread.join(', ')}. Images, PDFs and documents are not read.`));
+    }
 
     // ── actions ─────────────────────────────────────────────────────
     const redactable = findings.filter((f) => !f.advisory).length;
@@ -252,6 +268,81 @@
     };
     document.addEventListener('keydown', onKey, true);
   }
+
+
+  // ═══════════════════════════════════════════════════ what comes back
+  //
+  // Nobody scans the response. Two things there are worth catching:
+  //
+  //   1. the model echoing your own credential back into a transcript that is
+  //      now shared, logged and often exported; and
+  //   2. an indirect prompt-injection payload arriving in the answer, aimed at
+  //      whatever reads it next — a teammate, or an agent with tools.
+  //
+  // This is a notice, not a panel. The text has already arrived; blocking it
+  // would be theatre. What the person can still do is not paste it onward.
+
+  let noticeEl = null;
+  let noticeTimer = null;
+
+  function showNotice(message) {
+    clearTimeout(noticeTimer);
+    noticeEl?.remove();
+    noticeEl = el('div', 'chhanni-notice');
+    noticeEl.setAttribute('role', 'status');
+    noticeEl.append(el('span', 'chhanni-notice-dot'), el('span', null, message));
+    const close = el('button', 'chhanni-notice-x', '\u00d7');
+    close.setAttribute('aria-label', 'Dismiss');
+    close.onclick = () => { noticeEl?.remove(); noticeEl = null; };
+    noticeEl.appendChild(close);
+    document.body.appendChild(noticeEl);
+    requestAnimationFrame(() => noticeEl?.classList.add('chhanni-in'));
+    noticeTimer = setTimeout(() => { noticeEl?.remove(); noticeEl = null; }, 14000);
+  }
+
+  const seenResponses = new Set();
+  let responseTimer = null;
+
+  function inspectResponses() {
+    if (policy.watchResponses === false || policy.mode === 'off') return;
+    // Only the most recent stretch of the page: an assistant reply is appended
+    // at the end, and re-reading the whole transcript on every mutation would
+    // be both slow and noisy.
+    const body = document.body?.innerText || '';
+    if (body.length < 40) return;
+    const tail = body.slice(-12000);
+
+    let result;
+    try { result = scan(tail, { ...policy, ner: false, tables: false }); } catch { return; }
+
+    const worth = result.findings.filter((f) =>
+      f.ruleId === 'prompt_injection' || (!f.advisory && f.severity === 'critical'));
+    if (!worth.length) return;
+
+    // Fingerprints, so the same reply is not reported on every mutation.
+    const key = worth.map((f) => f.fingerprint).sort().join('|');
+    if (seenResponses.has(key)) return;
+    seenResponses.add(key);
+    if (seenResponses.size > 64) seenResponses.clear();
+
+    const injection = worth.find((f) => f.ruleId === 'prompt_injection');
+    if (injection) {
+      showNotice('The reply on this page contains instructions aimed at an assistant. If you forward it, they travel with it.');
+    } else {
+      const labels = [...new Set(worth.map((f) => f.label))].join(', ');
+      showNotice(`The reply contains ${labels}. It is now in this conversation\u2019s history.`);
+    }
+  }
+
+  const observer = new MutationObserver(() => {
+    clearTimeout(responseTimer);
+    // Debounced well past a streaming response's cadence, so this runs once
+    // when the reply settles rather than on every token.
+    responseTimer = setTimeout(inspectResponses, 1200);
+  });
+  try {
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  } catch { /* no body yet; the page is not a chat */ }
 
   // ----------------------------------------------------------- intercept
   document.addEventListener('paste', (e) => {
@@ -348,10 +439,24 @@
   async function guardFiles(files, { onAllow, onCancel }) {
     const reports = await inspect(files);
     const all = reports.flatMap((r) => r.findings);
-    if (!all.length) { onAllow(files); return; }
+    const unreadable = reports.filter((r) => r.skipped);
+
+    // Nothing found, but something could not be read: say so rather than
+    // letting silence imply the file was checked. A screenshot of a dashboard
+    // is a common leak and this extension cannot see inside it.
+    if (!all.length) {
+      if (unreadable.length && policy.mode !== 'off') {
+        showNotice(`Chhanni cannot read ${unreadable.length === 1
+          ? unreadable[0].file.name
+          : `${unreadable.length} of these files`} \u2014 images, PDFs and documents are not inspected. Check it yourself before sending.`);
+      }
+      onAllow(files);
+      return;
+    }
 
     const dirty = reports.filter((r) => r.findings.length);
     const names = dirty.map((r) => r.file.name).join(', ');
+    const unread = reports.filter((r) => r.skipped).map((r) => r.file.name);
 
     // Merge the per-file scans into one result the panel can render.
     const merged = {
@@ -371,6 +476,7 @@
         : `${all.length} things in ${dirty.length === 1 ? names : `${dirty.length} attached files`}`,
       redactLabel: `Attach redacted ${dirty.length === 1 ? 'copy' : 'copies'}`,
       proceedLabel: 'Attach as-is',
+      unread,
       onRedact: () => onAllow(reports.map(redactedCopy)),
       onProceed: () => onAllow(files),
       onDismiss: onCancel,

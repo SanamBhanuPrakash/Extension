@@ -29,7 +29,7 @@ import {
   cpf, cnpj, sin, nino, abn, tfn, isin, imei, euVat,
   awsAccountId, formatAccountId,
 } from './identifiers.js';
-import { isBenign, HEX_DIGEST } from './negatives.js';
+import { isBenign, HEX_DIGEST, isCodeIdentifier } from './negatives.js';
 import { CONTEXT_RULES, CONTEXT_CATEGORY } from './context.js';
 
 /** Card brand from the issuer identification number, for the note only. */
@@ -79,6 +79,7 @@ export const RULES = [
   },
   {
     id: 'aws_secret_access_key',
+    needs: { base64Run: 40 },
     label: 'AWS secret access key',
     severity: 'critical',
     confidence: 'likely',
@@ -292,7 +293,7 @@ export const RULES = [
     prefilter: ['uthorization'],
     pattern: /\b[Aa]uthorization\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12,})/g,
     group: 1,
-    validate: (m) => !isBenign(m, { placeholder: true }),
+    validate: (m) => !isBenign(m, { placeholder: true }) && !isCodeIdentifier(m),
   },
   {
     id: 'high_entropy_assignment',
@@ -303,12 +304,13 @@ export const RULES = [
     // left of an assignment, and something genuinely random on the right.
     pattern: /(?:secret|passwd|password|pwd|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|auth[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?([A-Za-z0-9_\-/+=.]{16,})["']?/gi,
     group: 1,
-    validate: (m) => !isBenign(m, { placeholder: true }) && looksRandom(m, 3.2),
+    validate: (m) => !isBenign(m, { placeholder: true }) && !isCodeIdentifier(m) && looksRandom(m, 3.2),
   },
 
   // ═══════════════════════════════════════════════════════════ India: identity
   {
     id: 'aadhaar',
+    needs: { digitRun: 12 },
     label: 'Aadhaar number',
     severity: 'critical',
     confidence: 'certain',
@@ -318,6 +320,7 @@ export const RULES = [
   },
   {
     id: 'pan_india',
+    needs: { upperRun: 5, alnumRun: 10 },
     label: 'Indian PAN',
     severity: 'high',
     confidence: 'likely',
@@ -326,6 +329,7 @@ export const RULES = [
   },
   {
     id: 'gstin',
+    needs: { alnumRun: 15, digitRun: 2 },
     label: 'GSTIN',
     severity: 'medium',
     confidence: 'certain',
@@ -335,6 +339,7 @@ export const RULES = [
   },
   {
     id: 'ifsc',
+    needs: { upperRun: 4, alnumRun: 11 },
     label: 'IFSC code',
     severity: 'low',
     confidence: 'likely',
@@ -352,6 +357,7 @@ export const RULES = [
   },
   {
     id: 'indian_passport',
+    needs: { digitRun: 7 },
     label: 'Indian passport number',
     severity: 'high',
     confidence: 'possible',
@@ -360,6 +366,7 @@ export const RULES = [
   },
   {
     id: 'voter_id',
+    needs: { upperRun: 3, alnumRun: 10 },
     label: 'Voter ID (EPIC)',
     severity: 'medium',
     confidence: 'possible',
@@ -368,6 +375,7 @@ export const RULES = [
   },
   {
     id: 'indian_dl',
+    needs: { upperRun: 2, digitRun: 6 },
     label: 'Indian driving licence',
     severity: 'medium',
     confidence: 'likely',
@@ -378,6 +386,7 @@ export const RULES = [
   // ════════════════════════════════════════════════════ global identity
   {
     id: 'payment_card',
+    needs: { digitRun: 13 },
     label: 'Payment card number',
     severity: 'critical',
     confidence: 'certain',
@@ -385,14 +394,26 @@ export const RULES = [
     // Luhn alone accepts ~1 in 10 random numbers of the right length, which is
     // how IMEIs and order numbers get reported as cards. The issuer range is
     // what makes this detector trustworthy.
-    // No benign-shape guard here on purpose. Luhn plus a live issuer range is
-    // already decisive, and the repetition guard was suppressing real card
-    // numbers with repeating digits — 4242424242424242 among them.
-    validate: (m) => luhn(m) && cardIssuer(m) !== null,
+    // No benign-shape guard here on purpose: the repetition guard suppressed
+    // real card numbers with repeating digits, 4242424242424242 among them.
+    //
+    // Instead, the match must be a WHOLE number. Scanning real source found a
+    // formatting test fixture — "123 456 789 123 456 789 ..." — yielding a
+    // fifteen-digit window that began with 34 and passed Luhn by chance. A
+    // card is bounded; a slice of a longer digit stream is not one.
+    validate: (m, ctx) => {
+      if (!luhn(m) || cardIssuer(m) === null) return false;
+      const before = ctx.text.slice(Math.max(0, ctx.index - 3), ctx.index);
+      const after = ctx.text.slice(ctx.index + m.length, ctx.index + m.length + 3);
+      if (/\d[ -]?$/.test(before)) return false;
+      if (/^[ -]?\d/.test(after)) return false;
+      return true;
+    },
     enrich: (m) => ({ note: `${cardIssuer(m)}, passes Luhn and a live issuer range.` }),
   },
   {
     id: 'iban',
+    needs: { upperRun: 2, alnumRun: 4 },
     label: 'IBAN',
     severity: 'high',
     confidence: 'certain',
@@ -401,6 +422,7 @@ export const RULES = [
   },
   {
     id: 'us_ssn',
+    needs: { digitRun: 9 },
     label: 'US Social Security number',
     severity: 'critical',
     confidence: 'likely',
@@ -409,6 +431,7 @@ export const RULES = [
   },
   {
     id: 'canada_sin',
+    needs: { digitRun: 9 },
     label: 'Canadian SIN',
     severity: 'critical',
     confidence: 'likely',
@@ -417,6 +440,7 @@ export const RULES = [
   },
   {
     id: 'uk_nino',
+    needs: { upperRun: 2, digitRun: 6 },
     label: 'UK National Insurance number',
     severity: 'critical',
     confidence: 'likely',
@@ -425,6 +449,7 @@ export const RULES = [
   },
   {
     id: 'brazil_cpf',
+    needs: { digitRun: 11 },
     label: 'Brazilian CPF',
     severity: 'critical',
     confidence: 'certain',
@@ -433,6 +458,7 @@ export const RULES = [
   },
   {
     id: 'brazil_cnpj',
+    needs: { digitRun: 14 },
     label: 'Brazilian CNPJ',
     severity: 'medium',
     confidence: 'certain',
@@ -441,6 +467,7 @@ export const RULES = [
   },
   {
     id: 'australia_abn',
+    needs: { digitRun: 11 },
     label: 'Australian Business Number',
     severity: 'low',
     confidence: 'certain',
@@ -449,6 +476,7 @@ export const RULES = [
   },
   {
     id: 'australia_tfn',
+    needs: { digitRun: 9 },
     label: 'Australian Tax File Number',
     severity: 'critical',
     confidence: 'likely',
@@ -457,6 +485,7 @@ export const RULES = [
   },
   {
     id: 'eu_vat',
+    needs: { upperRun: 2, alnumRun: 11 },
     label: 'EU VAT number',
     severity: 'low',
     confidence: 'certain',
@@ -466,6 +495,7 @@ export const RULES = [
   },
   {
     id: 'isin',
+    needs: { upperRun: 2, alnumRun: 12 },
     label: 'ISIN (security identifier)',
     severity: 'low',
     confidence: 'certain',
@@ -474,6 +504,7 @@ export const RULES = [
   },
   {
     id: 'imei',
+    needs: { digitRun: 15 },
     label: 'IMEI',
     severity: 'medium',
     confidence: 'likely',
@@ -491,12 +522,25 @@ export const RULES = [
   },
   {
     id: 'phone_india',
+    needs: { digitRun: 10 },
     label: 'Indian mobile number',
     severity: 'low',
     confidence: 'likely',
-    pattern: /(?:\+?91[ -]?)?\b([6-9]\d{9})\b/g,
-    group: 1,
-    validate: (m) => !isBenign(m, { hex: false }),
+    pattern: /(\+?91[ -]?)?\b([6-9]\d{4}[ -]?\d{5})\b/g,
+    group: 2,
+    /**
+     * A bare ten-digit number is not a phone number. Scanning real source
+     * found 411 matches in a single test fixture full of arbitrary integers.
+     * It counts only with a country code, a separator, or a word nearby that
+     * says what it is.
+     */
+    validate: (m, ctx) => {
+      if (isBenign(m, { hex: false })) return false;
+      if (/^\+?91/.test(ctx.full)) return true;
+      if (/[ -]/.test(m)) return true;
+      const around = ctx.text.slice(Math.max(0, ctx.index - 48), ctx.index + m.length + 24);
+      return /\b(?:phone|mobile|cell|contact|call|whats ?app|tel|number|reach|sms)\b/i.test(around);
+    },
   },
 ];
 
@@ -516,6 +560,9 @@ RULES.push(
     note: 'Personal data under GDPR and the DPDP Act when it identifies someone.' },
   { id: 'postal_address', label: 'Postal address', severity: 'high', confidence: 'likely',
     synthetic: true, pattern: /(?!)/g },
+  { id: 'prompt_injection', label: 'Instructions aimed at the assistant', severity: 'critical',
+    confidence: 'likely', synthetic: true, advisory: true, pattern: /(?!)/g,
+    note: 'Indirect prompt injection: OWASP LLM01.' },
 );
 
 export const RULES_BY_ID = new Map(RULES.map((r) => [r.id, r]));
@@ -532,6 +579,7 @@ export const CATEGORIES = [
   { id: 'india', label: 'India — identity', ids: ['aadhaar', 'pan_india', 'gstin', 'ifsc', 'upi_vpa', 'indian_passport', 'voter_id', 'indian_dl', 'phone_india'] },
   CONTEXT_CATEGORY,
   { id: 'prose', label: 'Names & addresses in prose', ids: ['person_name', 'postal_address'] },
+  { id: 'injection', label: 'Prompt injection', ids: ['prompt_injection'] },
   { id: 'global', label: 'Global — identity', ids: ['payment_card', 'iban', 'us_ssn', 'canada_sin', 'uk_nino', 'brazil_cpf', 'brazil_cnpj', 'australia_abn', 'australia_tfn', 'eu_vat', 'isin', 'imei', 'email'] },
 ];
 
@@ -553,6 +601,7 @@ for (const group of CATEGORIES) {
 export const PROOFS = {
   person_name: 'a character-n-gram classifier trained on 30,675 names from 75 locales, combined with structural context',
   postal_address: 'structural \u2014 a house number or postcode plus a street or unit component',
+  prompt_injection: 'weighted signals: override imperatives, role reassignment, exfiltration requests, CSS-hidden text and invisible Unicode channels',
   aws_access_key_id: 'base32 decode recovers the AWS account number from the key itself',
   aws_secret_access_key: 'Shannon entropy \u2265 4.2, a credential word within 48 characters, and not a hex digest',
   github_token: "CRC32 checksum carried in the token's own last 6 characters",

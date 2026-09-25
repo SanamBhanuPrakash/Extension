@@ -52,7 +52,31 @@ classifier alone reaches 71.7% and cannot go higher; context does the rest.
 
 What follows is the remaining order.
 
-### 1b. Non-Latin scripts
+### ~~1b. Non-Latin scripts~~ — shipped
+
+Ten uncased scripts and four cased ones, 10,237 names. Names F1 98.9% across
+eight scripts. What remains: scripts outside that set, and the fact that a
+gazetteer cannot generalise the way the classifier does — Devanagari coverage
+in particular is thin and deserves a better source.
+
+### ~~3. Team mode, without a console~~ — shipped
+
+Through `chrome.storage.managed`, which the browser populates from GPO, macOS
+profiles, Chrome Enterprise or Firefox `policies.json`. Policy flows in;
+nothing flows out; no permission added. Internal codenames are matched locally
+and never ship in the package.
+
+### ~~4. Response-side scanning~~ — shipped
+
+A debounced pass over replies, reporting echoed credentials and injection
+payloads as a notice rather than a panel — the text has already arrived.
+
+### ~~6. Coverage that keeps up~~ — shipped
+
+Composer detection by shape, not hostname. Plus optional host permissions so a
+user can grant access to a product that ships after this version.
+
+### 1c. What is actually left
 
 The largest capability gap. A name, a home address, a medical detail written in
 ordinary prose is invisible to a pattern engine.

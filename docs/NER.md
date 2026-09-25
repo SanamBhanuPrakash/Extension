@@ -12,11 +12,14 @@ which is the form most personal data actually takes outside a database export.
 ```console
 $ node bench/ner.js
 
-25 annotated documents · 10 of them hard negatives
+34 annotated documents · 13 of them hard negatives
 
-  names      precision 94.6%   recall 100.0%   F1 97.2%   35 found / 2 false / 0 missed
+  names      precision 97.8%   recall 100.0%   F1  98.9%   44 found / 1 false / 0 missed
   addresses  precision 100.0%  recall 100.0%   F1 100.0%   8 found / 0 false / 0 missed
 ```
+
+Across **eight scripts**: Latin, Devanagari, Arabic, Hebrew, Thai, Han, Hangul
+and Cyrillic.
 
 The two remaining false positives are both organisations read as people
 (`Goldman Sachs`, `Fabrikam`) — a low-harm error, since an organisation in a
@@ -83,6 +86,38 @@ This is the same shape as [Microsoft Presidio](https://microsoft.github.io/presi
 because the whole thing has to fit in a browser extension a store will review,
 with no network.
 
+## Scripts without case
+
+Capitalisation is a Latin-shaped assumption, and it quietly excluded most of
+the world. Arabic, Hebrew, Devanagari, Bengali, Tamil, Telugu, Thai, Han,
+Hangul and the kana have **no case at all** — so the single strongest feature
+in the pipeline does not exist for them.
+
+For those scripts an exact gazetteer is the right instrument, not a fallback.
+The character inventory is small, names are short, and an exact match is the
+strongest evidence available when there is no capitalisation to lean on.
+**10,237 names**, 142 KB, parsed on first use — and most pastes never contain a
+non-Latin character at all, so most never pay for it.
+
+Two different treatments, because the scripts differ in a way that matters more
+than the alphabet:
+
+- **Space-separated** (Arabic, Hebrew, Devanagari, Bengali, Tamil, Telugu,
+  Hangul): a token is a unit, so a gazetteer hit is decisive, and adjacent hits
+  join into a full name.
+- **Dense** (Han, Thai, kana): no token boundaries exist, so a sliding window
+  finds candidates — up to the longest gazetteer entry, longest match first. A
+  four-character ceiling silently missed every Thai name. Because a short
+  window will inevitably collide with ordinary words, these additionally
+  require a context cue and report at lower confidence.
+
+**Cased non-Latin scripts** — Cyrillic, Greek, Armenian, Georgian — are in the
+classifier's training set and behave like Latin, with one correction. The
+classifier's *negatives* are Latin-only: it has never seen an ordinary Cyrillic
+word, so it scored every one of them as a name, including the verb `Говорил`
+("I spoke"). In those scripts character evidence is inadmissible on its own, and
+a gazetteer hit or real context is required.
+
 ## Addresses
 
 No model. A postal address is a *structure*, and structure is checkable:
@@ -112,8 +147,8 @@ Name and address detection runs on every paste, so its cost is stated:
 
 | | |
 |---|---|
-| Full scan, 46 KB, 94 detectors + tables + NER | **5.7 ms (8.2 MB/s)** |
-| Prose corpus, 92 KB, names + addresses only | 23 ms (4.0 MB/s) |
+| Full scan, 46 KB, 95 detectors + tables + prose + injection | **3.2 ms (14.3 MB/s)** |
+| Prose corpus, 105 KB, names + addresses only | 17.9 ms (5.9 MB/s) |
 | Model weights | 21 KB, int8-quantised, decoded lazily |
 | Stoplist | 34 KB, parsed into a Set on first use |
 
@@ -147,8 +182,11 @@ working, and the cheapest prevention is one copy of the code.
 - **No coreference.** "She said the invoice was wrong" is not linked to Priya.
 - **No organisation/person disambiguation.** The two remaining false positives
   are exactly this, and fixing it properly needs an organisation gazetteer.
-- **Latin script only.** Names written in Devanagari, Arabic, Han or Cyrillic
-  are not detected — the classifier folds diacritics but assumes Latin
-  characters. This is the largest remaining gap for the non-English world.
+- **Only the scripts listed above.** The gazetteer covers ten uncased scripts
+  and four cased ones. A name in a script outside that set is not detected.
+- **The gazetteer is finite.** Unlike the classifier, it cannot generalise: a
+  Devanagari name nobody wrote down is missed. Devanagari coverage in
+  particular is thin (93 entries) and deserves a better source than a
+  test-data library.
 - **No dates of birth, no medical identifiers in prose.** Structured forms are
   covered by the pattern rules; free-text forms are not.

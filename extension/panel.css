@@ -233,3 +233,42 @@
   .chhanni-actions button.chhanni-ghost:hover { background: rgba(255,255,255,.1); }
   .chhanni-hint kbd { background: rgba(255,255,255,.06); }
 }
+
+/* The response notice: quieter than the panel, because the text has already
+   arrived and there is nothing left to block — only something to know. */
+.chhanni-notice {
+  position: fixed; right: 20px; bottom: 20px; z-index: 2147483646;
+  display: flex; align-items: flex-start; gap: 9px;
+  max-width: min(380px, calc(100vw - 40px));
+  box-sizing: border-box; padding: 12px 13px;
+  font: 400 12.5px/1.5 'Inter var', ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #11151c;
+  background: rgba(252, 253, 255, .80);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 0.5px solid rgba(9, 14, 22, .10);
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 8px 24px -8px rgba(9,14,22,.2);
+  opacity: 0; transform: translateY(8px);
+  transition: opacity .2s cubic-bezier(.32,.72,0,1), transform .3s cubic-bezier(.32,.72,0,1);
+}
+.chhanni-notice.chhanni-in { opacity: 1; transform: none; }
+.chhanni-notice-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: none; margin-top: 6px;
+  background: #b8690f; box-shadow: 0 0 0 3px rgba(184,105,15,.16);
+}
+.chhanni-notice-x {
+  all: unset; cursor: pointer; color: #8b93a1; font-size: 15px;
+  line-height: 1; padding: 1px 3px; border-radius: 5px; margin-left: 2px;
+}
+.chhanni-notice-x:hover { color: #11151c; background: rgba(9,14,22,.05); }
+@media (prefers-color-scheme: dark) {
+  .chhanni-notice {
+    color: #eef1f6; background: rgba(26, 30, 38, .82);
+    border-color: rgba(255,255,255,.10);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.1), 0 10px 28px -8px rgba(0,0,0,.5);
+  }
+  .chhanni-notice-dot { background: #f2a33c; box-shadow: 0 0 0 3px rgba(242,163,60,.18); }
+  .chhanni-notice-x:hover { color: #eef1f6; background: rgba(255,255,255,.07); }
+}
+@media (prefers-reduced-motion: reduce) { .chhanni-notice { transition: none; opacity: 1; transform: none; } }

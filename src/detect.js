@@ -14,7 +14,10 @@ import { detectTable, tableSeverity, describeTable } from './tabular.js';
 import { exposureScore, BAND_TEXT } from './risk.js';
 import { regimesFor, regimeNames } from './regulations.js';
 import { findNames, findAddresses } from './ner.js';
-import { build as buildAutomaton, search as searchAutomaton } from './ahocorasick.js';
+import { detectInjection } from './injection.js';
+import { codenameRule } from './managed.js';
+import { build as buildAutomaton } from './ahocorasick.js';
+import { profile, couldMatch } from './profile.js';
 
 /**
  * Compiled once at import, not per scan.
@@ -148,25 +151,38 @@ export function scan(input, policy = {}) {
   const text = truncated ? input.slice(0, MAX_SCAN_BYTES) : input;
   const errors = [];
 
-  // One pass answers the prefilter question for every rule at once.
-  const presentLiterals = searchAutomaton(AUTOMATON, text);
+  // One pass answers every gating question at once: which prefilter literals
+  // are present, and the longest digit, uppercase and alphanumeric runs.
+  const shape = profile(text, AUTOMATON);
   const eligible = new Set();
-  for (const id of presentLiterals) for (const ruleId of LITERAL_OWNERS[id]) eligible.add(ruleId);
+  for (const id of shape.literals) for (const ruleId of LITERAL_OWNERS[id]) eligible.add(ruleId);
 
-  for (const rule of RULES) {
+  // An organisation's codenames are theirs, differ per install, and must never
+  // be baked into a published package — so the rule is built per scan from
+  // policy rather than shipped.
+  const orgRule = p.codenames && p.codenames.length ? codenameRule(p.codenames) : null;
+  const activeRules = orgRule ? [...RULES, orgRule] : RULES;
+
+  for (const rule of activeRules) {
     if (disabled.has(rule.id) || rule.synthetic) continue;
     // Prefilter: a cheap substring test before an expensive backtracking regex.
     // Most detectors are anchored on a literal nothing else uses (AKIA, ghp_,
     // xoxb-), so on ordinary prose the overwhelming majority are skipped
     // outright. This is what keeps an 81-detector scan cheap on a large paste.
     if (rule.prefilter && !eligible.has(rule.id)) continue;
+    // Shape gate: a pattern that needs thirteen consecutive digits cannot
+    // match a document whose longest digit run is four.
+    if (!couldMatch(rule, shape)) continue;
     if (raw.length >= MAX_TOTAL_FINDINGS) break;
 
     // Every rule runs inside its own try/catch. One malformed pattern, one
     // validator that throws on an input nobody anticipated, must degrade that
     // single detector — never the scan, and never the page the scan runs in.
     try {
-      const re = compiled(COMPILED, rule);
+      // The per-install codename rule is not in the module-level cache.
+      const re = rule.id === 'org_codename'
+        ? Object.assign(rule.pattern, { lastIndex: 0 })
+        : compiled(COMPILED, rule);
       let m;
       let hits = 0;
       while ((m = re.exec(text)) !== null) {
@@ -210,6 +226,33 @@ export function scan(input, policy = {}) {
       }
     } catch (err) {
       errors.push({ ruleId: rule.id, stage: 'match', message: String(err && err.message) });
+    }
+  }
+
+  // ── indirect prompt injection ─────────────────────────────────────────
+  // The only check here where the user is the carrier rather than the leaker:
+  // text pasted from a web page, a ticket or a CV that carries instructions
+  // aimed at the assistant rather than at the reader.
+  if (p.injection !== false && !disabled.has('prompt_injection')) {
+    try {
+      const inj = detectInjection(text);
+      if (inj) {
+        raw.push({
+          ruleId: 'prompt_injection',
+          label: 'Instructions aimed at the assistant',
+          severity: inj.severity,
+          confidence: inj.score >= 3 ? 'likely' : 'possible',
+          note: `This text contains ${inj.signals.map((sig) => sig.label).join('; ')}. You are the carrier here, not the target.`,
+          advisory: true, audience: 'everyone',
+          start: 0, end: Math.min(text.length, 64),
+          match: text.slice(0, 64),
+          preview: inj.signals.map((sig) => sig.id).join(', '),
+          fingerprint: fingerprint(inj.signals.map((sig) => sig.id).join(',')),
+          line: 1,
+        });
+      }
+    } catch (err) {
+      errors.push({ ruleId: 'prompt_injection', stage: 'detect', message: String(err && err.message) });
     }
   }
 
@@ -262,8 +305,63 @@ export function scan(input, policy = {}) {
   if (p.tables !== false) {
     try {
       table = detectTable(text, (cell) => scanCell(cell, disabled, allow));
+      if (table) {
+        table.severity = tableSeverity(table.rows);
+        table.description = describeTable(table);
+      }
     } catch (err) {
       errors.push({ ruleId: 'table', stage: 'detect', message: String(err && err.message) });
+    }
+  }
+
+  // A detected table's personal columns produce findings for their own cells,
+  // which is both more accurate than guessing value by value and what makes a
+  // pasted export redactable.
+  if (table && typeof table.cellSpans === 'function') {
+    try {
+      // Sorted once and searched by bisection. Scanning the whole array per
+      // cell was O(n^2) and hung on a 5,000-row export.
+      const claimed = findings
+        .map((f) => ({ start: f.start, end: f.end }))
+        .sort((a, b) => a.start - b.start);
+      const overlapsClaimed = (start, end) => {
+        let lo = 0;
+        let hi = claimed.length - 1;
+        let idx = claimed.length;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (claimed[mid].start >= start) { idx = mid; hi = mid - 1; } else lo = mid + 1;
+        }
+        // The first span starting at or after `start`, and the one before it.
+        if (idx < claimed.length && claimed[idx].start < end) return true;
+        if (idx > 0 && claimed[idx - 1].end > start) return true;
+        return false;
+      };
+      const KIND_RULE = {
+        email: 'email', phone: 'phone_india', ssn: 'us_ssn', aadhaar: 'aadhaar',
+        pan: 'pan_india', gstin: 'gstin', card: 'payment_card', account: 'iban',
+        passport: 'indian_passport', name: 'person_name', address: 'postal_address',
+        dob: 'person_name', salary: 'person_name', health: 'health_information',
+        device: 'imei', secret: 'high_entropy_assignment',
+      };
+      for (const cell of table.cellSpans()) {
+        if (overlapsClaimed(cell.start, cell.end)) continue;
+        findings.push({
+          ruleId: KIND_RULE[cell.kind] || 'person_name',
+          label: cell.label || 'Personal data',
+          severity: table.severity === 'critical' ? 'high' : 'medium',
+          confidence: 'likely',
+          note: null,
+          advisory: false,
+          audience: 'everyone',
+          start: cell.start, end: cell.end, match: cell.value,
+          preview: mask(cell.value), fingerprint: fingerprint(cell.value),
+          line: line(text, cell.start),
+        });
+      }
+      findings.sort((a, b) => a.start - b.start);
+    } catch (err) {
+      errors.push({ ruleId: 'table', stage: 'cells', message: String(err && err.message) });
     }
   }
 
@@ -273,11 +371,8 @@ export function scan(input, policy = {}) {
   if (findings.some((f) => blockSet.has(f.severity))) verdict = 'block';
   else if (findings.some((f) => warnSet.has(f.severity))) verdict = 'warn';
   if (table) {
-    const sev = tableSeverity(table.rows);
-    if (blockSet.has(sev)) verdict = 'block';
-    else if (verdict === 'clean' && warnSet.has(sev)) verdict = 'warn';
-    table.severity = sev;
-    table.description = describeTable(table);
+    if (blockSet.has(table.severity)) verdict = 'block';
+    else if (verdict === 'clean' && warnSet.has(table.severity)) verdict = 'warn';
   }
 
   const risk = exposureScore(findings, table);

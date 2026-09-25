@@ -29,6 +29,7 @@
 import { features } from './namefeatures.js';
 import { SCALE, BIAS, THRESHOLD, PACKED } from './nameweights.js';
 import { isCommonWord } from './commonwords.js';
+import { isKnownName } from './nonlatinnames.js';
 
 // ── model ────────────────────────────────────────────────────────────────
 
@@ -260,9 +261,17 @@ export function findNames(text, options = {}) {
     // products act in sentences too.
     const STRONG = new Set(['honorific', 'introduced', 'full name', 'job title', 'matching email']);
     if (run.length === 1 && !evidence.some((e) => STRONG.has(e))) z -= 1.9;
+    // The classifier's negative set is Latin-only, so it has never seen an
+    // ordinary Cyrillic, Greek or Armenian word and scores them all as names.
+    // In those scripts character evidence is not admissible on its own.
+    if (!/\p{Script=Latin}/u.test(run[0].text)) {
+      const known = run.some((t) => isKnownName(t.text));
+      if (known) { z += 2.2; evidence.push('known name'); }
+      else if (!evidence.some((e) => STRONG.has(e))) { z -= 4.0; evidence.push('unverified script'); }
+    }
     // Place and product context, which beats character evidence outright.
     if (PLACE_AFTER.test(after)) { z -= 4.6; evidence.push("followed by a place word"); }
-    else if (run.length === 1 && PLACE_BEFORE.test(before)) { z -= 1.5; evidence.push('preposition'); }
+    else if (run.length === 1 && PLACE_BEFORE.test(before)) { z -= 2.6; evidence.push("preposition"); }
     // Possessive reads as a person far more often than not.
     if (/^['’]s\b/.test(after)) { z += 0.9; evidence.push('possessive'); }
     // An email address on the same line that shares the name's letters.
@@ -291,7 +300,111 @@ export function findNames(text, options = {}) {
     }
     i = j;
   }
+
+  // Scripts without case are handled separately and merged in document order.
+  for (const span of findNonLatinNames(text)) {
+    const clash = spans.some((p) => span.start < p.end && p.start < span.end)
+      || claimed.some((a) => span.start >= a.start && span.end <= a.end);
+    if (!clash) spans.push(span);
+  }
+  spans.sort((a, b) => a.start - b.start);
+
   return spans;
+}
+
+// ── names in scripts without case ────────────────────────────────────────
+//
+// Everything above leans on capitalisation, which is a Latin-shaped assumption
+// that quietly excludes most of the world. Arabic, Hebrew, Devanagari, Thai,
+// Han, Hangul and the kana have no case at all, so the strongest feature in
+// the pipeline does not exist for them.
+//
+// Two different instruments are needed, because the scripts differ in a way
+// that matters more than the alphabet: whether words are separated by spaces.
+
+/** Space-separated, uncased: a token is a unit, so a gazetteer hit is decisive. */
+const SPACED_UNCASED = /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Devanagari}\p{Script=Bengali}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Hangul}\u0640\u200c\u200d]+/gu;
+
+/**
+ * Dense scripts write without spaces, so there are no token boundaries to use.
+ * A sliding window finds candidates, and because a two-character window will
+ * inevitably collide with ordinary words, these additionally require a context
+ * cue and are reported at lower confidence.
+ */
+const DENSE_UNCASED = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\u30fc]+/gu;
+
+function contextAround(text, start, end) {
+  const before = text.slice(Math.max(0, start - 40), start);
+  const after = text.slice(end, end + 40);
+  return {
+    honorific: HONORIFIC.test(before.trimEnd()),
+    cue: BEFORE_CUE.test(before) || AFTER_CUE.test(after) || JOB_CUE.test(after),
+  };
+}
+
+export function findNonLatinNames(text) {
+  const spans = [];
+
+  // Space-separated scripts: each run is a word; adjacent known names join.
+  {
+    const re = new RegExp(SPACED_UNCASED.source, SPACED_UNCASED.flags);
+    let m;
+    let pending = null;
+    while ((m = re.exec(text)) !== null) {
+      const token = m[0];
+      const hit = token.length >= 2 && isKnownName(token);
+      if (hit) {
+        // Join to the previous match when only a space separates them, so a
+        // given name and a family name become one span.
+        if (pending && text.slice(pending.end, m.index).trim() === '') {
+          pending.end = m.index + token.length;
+          pending.parts++;
+        } else {
+          if (pending) spans.push(pending);
+          pending = { start: m.index, end: m.index + token.length, parts: 1 };
+        }
+      } else if (pending) { spans.push(pending); pending = null; }
+    }
+    if (pending) spans.push(pending);
+  }
+
+  // Dense scripts: slide a window, longest match wins, context required.
+  {
+    const re = new RegExp(DENSE_UNCASED.source, DENSE_UNCASED.flags);
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const run = m[0];
+      if (run.length < 2 || run.length > 80) continue;
+      for (let i = 0; i < run.length; ) {
+        let matched = 0;
+        // Longest match first, up to the longest name in the gazetteer.
+        // A four-character ceiling silently missed every Thai name.
+        for (let len = Math.min(14, run.length - i); len >= 2; len--) {
+          if (isKnownName(run.slice(i, i + len))) { matched = len; break; }
+        }
+        if (matched) {
+          const start = m.index + i;
+          const ctx = contextAround(text, start, start + matched);
+          if (ctx.honorific || ctx.cue) {
+            spans.push({ start, end: start + matched, parts: 1, dense: true });
+          }
+          i += matched;
+        } else i++;
+      }
+    }
+  }
+
+  return spans.map((sp) => {
+    const ctx = contextAround(text, sp.start, sp.end);
+    const evidence = ['known name'];
+    if (ctx.honorific) evidence.push('honorific');
+    else if (ctx.cue) evidence.push('introduced');
+    if (sp.parts > 1) evidence.push('full name');
+    // A dense-script window is weaker evidence than a whole token, and a
+    // multi-part span is stronger than a single one.
+    const score = sp.dense ? 0.80 : sp.parts > 1 ? 0.97 : (ctx.honorific || ctx.cue) ? 0.95 : 0.88;
+    return { start: sp.start, end: sp.end, text: text.slice(sp.start, sp.end), score, evidence };
+  });
 }
 
 // ── address detection ────────────────────────────────────────────────────

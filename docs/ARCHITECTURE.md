@@ -57,16 +57,21 @@ Strictly layered, no cycles. Each layer may import only from below.
       │
       ├── checksums.js    Luhn, Verhoeff, mod-97, CRC32, entropy, issuer ranges
       ├── identifiers.js  national IDs, AWS account decoding
-      ├── negatives.js    benign shapes: UUIDs, digests, epochs, placeholders
+      ├── negatives.js    benign shapes: UUIDs, digests, epochs, code identifiers
       ├── context.js      business, legal, financial, health signals
-      └── ahocorasick.js  the multi-pattern prefilter automaton
+      ├── injection.js    indirect prompt injection (OWASP LLM01)
+      ├── managed.js      organisation policy, merged locally
+      ├── composer.js     finding the composer on an unknown site
+      ├── ahocorasick.js  multi-pattern prefilter automaton
+      └── profile.js      one-pass shape gate (digit/upper/alnum/base64 runs)
 
                           all of these import nothing at all
 
   ner.js                names and addresses in prose
-      ├── namefeatures.js   hashed character features (shared with the trainer)
-      ├── nameweights.js    21 KB int8 logistic-regression weights
-      └── commonwords.js    4,422 title-cased English words
+      ├── namefeatures.js    hashed character features (shared with the trainer)
+      ├── nameweights.js     21 KB int8 logistic-regression weights
+      ├── commonwords.js     4,422 title-cased English words
+      └── nonlatinnames.js   10,237 names in scripts that have no case
 
   tabular.js            bulk-record detection
   risk.js               the 0-100 exposure score
@@ -138,6 +143,33 @@ caught, not a hypothetical.
 The classifier scores F1 71.7% alone and the pipeline scores 97.2%. The design
 and its limits are in [NER.md](NER.md).
 
+## The gating stack
+
+Three filters run before any expensive regex, all fed by **one walk of the
+string**:
+
+```
+  text
+   │
+   ├─ Aho–Corasick  ──▶ which prefilter literals are present?      (one O(n) pass)
+   ├─ shape profile ──▶ longest digit / upper / alnum / base64 run  (same pass)
+   │
+   ▼
+  for each rule:  literal present?  AND  shape sufficient?  → run the regex
+```
+
+The shape gate is the one that was missing. Roughly twenty detectors have no
+literal to filter on, because their patterns are pure shape — payment cards,
+Aadhaar, CPF, IBAN, PAN, GSTIN, IMEI — and several of them are the most
+expensive regexes in the ruleset. A payment card needs thirteen consecutive
+digits, separators allowed; if the longest such run in the document is four,
+the regex cannot match and never runs.
+
+`base64Run` exists separately from `alnumRun` for one reason: an AWS secret key
+is forty characters of base64, which includes `/` and `+`. Gating it on the
+alphanumeric run discarded every real one, because the separators are *inside*
+the secret.
+
 ## Prefilters
 
 Most detectors are anchored on a literal nothing else uses — `AKIA`, `ghp_`,
@@ -162,10 +194,10 @@ of samples twice, once with every prefilter stripped, and asserts the findings
 are identical — and separately checks the automaton returns exactly what
 `includes()` would.
 
-Measured: a 46 KB document scanned in **5.7 ms, about 8.2 MB/s**, with all 94
-detectors, table detection *and* the prose pass enabled. Before the automaton,
-the compiled-regex cache and the NER tokenisation work, the same document with
-*fewer* features took 11.1 ms.
+Measured: a 46 KB document scanned in **3.2 ms, about 14.3 MB/s**, with all 95
+detectors, table detection, the prose pass *and* injection detection enabled.
+The same document with *fewer* features took 11.1 ms before the automaton, the
+shape gate, the compiled-regex cache and the NER tokenisation work.
 
 ## Surfaces
 
@@ -193,6 +225,26 @@ to diff against source, and no post-install scripts.
 The cost is real and accepted: MV3 content scripts cannot be ES modules
 directly, so `content.js` is an async IIFE that dynamic-imports the engine
 from a web-accessible resource.
+
+## Data flow: the response
+
+Everything else in this system runs before text leaves. One pass runs after it
+comes back.
+
+```
+  MutationObserver on <body>
+        │  debounced 1.2s — past a streaming reply's cadence
+        ▼
+  scan(last 12 KB of innerText, {ner: false, tables: false})
+        │
+        ├─ prompt injection in the reply ──▶ notice
+        ├─ a critical credential echoed  ──▶ notice
+        └─ otherwise                     ──▶ silence
+```
+
+A notice, not a panel: the text has already arrived, so blocking it would be
+theatre. What the person can still do is not forward it. Findings are
+fingerprinted so the same reply is reported once, not on every mutation.
 
 ## Data flow: attachments
 

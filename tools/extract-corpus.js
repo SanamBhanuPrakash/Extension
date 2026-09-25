@@ -12,6 +12,9 @@
 import { allFakers } from '@faker-js/faker';
 import { writeFileSync } from 'node:fs';
 
+// Any cased script, not only Latin. Cyrillic, Greek, Armenian and Georgian
+// have capitals and behave exactly like Latin in the pipeline, so they belong
+// in the classifier's training set rather than in a gazetteer.
 const NAME_RE = /^[\p{Lu}][\p{L}'’\-]{1,23}$/u;
 
 /** faker stores names as arrays, or as {male:[],female:[],generic:[]}. */
@@ -94,6 +97,16 @@ const out = {
   ambiguous,
 };
 writeFileSync('/tmp/claude-0/corpus.json', JSON.stringify(out));
+const scripts = { Latin: 0, Cyrillic: 0, Greek: 0, Armenian: 0, Georgian: 0, other: 0 };
+for (const n of out.positives) {
+  if (/\p{Script=Cyrillic}/u.test(n)) scripts.Cyrillic++;
+  else if (/\p{Script=Greek}/u.test(n)) scripts.Greek++;
+  else if (/\p{Script=Armenian}/u.test(n)) scripts.Armenian++;
+  else if (/\p{Script=Georgian}/u.test(n)) scripts.Georgian++;
+  else if (/\p{Script=Latin}/u.test(n)) scripts.Latin++;
+  else scripts.other++;
+}
+console.log(`scripts            : ${Object.entries(scripts).filter(([, v]) => v).map(([k, v]) => `${k} ${v.toLocaleString()}`).join(', ')}`);
 console.log(`locales with names : ${Object.keys(localeCount).length}`);
 console.log(`positives          : ${out.positives.length.toLocaleString()}`);
 console.log(`negatives          : ${out.negatives.length.toLocaleString()}`);

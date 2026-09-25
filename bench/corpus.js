@@ -172,6 +172,9 @@ const CONTEXT = {
   australia_abn: (v) => `supplier ABN ${v}`,
   australia_tfn: (v) => `TFN ${v} for payroll`,
   imei: (v) => `device IMEI ${v} reported lost`,
+  // A bare ten-digit number is not a phone number, and the detector correctly
+  // refuses to guess. The corpus has to say what it is, the way real text does.
+  phone_india: (v) => `mobile ${v}`,
   indian_passport: (v) => `passport number ${v}`,
   voter_id: (v) => `voter EPIC ${v}`,
   okta_token: (v) => `okta token ${v}`,
