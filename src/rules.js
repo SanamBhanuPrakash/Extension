@@ -30,6 +30,7 @@ import {
   awsAccountId, formatAccountId,
 } from './identifiers.js';
 import { isBenign, HEX_DIGEST } from './negatives.js';
+import { CONTEXT_RULES, CONTEXT_CATEGORY } from './context.js';
 
 /** Card brand from the issuer identification number, for the note only. */
 function cardBrand(value) {
@@ -499,6 +500,11 @@ export const RULES = [
   },
 ];
 
+// Context signals run through the same pipeline so they inherit policy,
+// overlap resolution, masking and the UI — but they carry `advisory: true`,
+// which redaction honours by leaving them in place.
+RULES.push(...CONTEXT_RULES);
+
 export const RULES_BY_ID = new Map(RULES.map((r) => [r.id, r]));
 
 /** Grouping, for the settings UI only. Kept out of the rule objects. */
@@ -511,6 +517,7 @@ export const CATEGORIES = [
   { id: 'platform', label: 'Data & platform', ids: ['shopify_token', 'databricks_token', 'supabase_key', 'planetscale_token', 'doppler_token', 'notion_token', 'figma_token', 'linear_key', 'atlassian_token', 'dropbox_token', 'newrelic_key', 'grafana_token', 'sentry_token', 'okta_token'] },
   { id: 'generic', label: 'Generic secrets', ids: ['private_key_block', 'db_connection_string', 'jwt', 'bearer_header', 'high_entropy_assignment'] },
   { id: 'india', label: 'India — identity', ids: ['aadhaar', 'pan_india', 'gstin', 'ifsc', 'upi_vpa', 'indian_passport', 'voter_id', 'indian_dl', 'phone_india'] },
+  CONTEXT_CATEGORY,
   { id: 'global', label: 'Global — identity', ids: ['payment_card', 'iban', 'us_ssn', 'canada_sin', 'uk_nino', 'brazil_cpf', 'brazil_cnpj', 'australia_abn', 'australia_tfn', 'eu_vat', 'isin', 'imei', 'email'] },
 ];
 

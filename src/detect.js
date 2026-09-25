@@ -10,6 +10,18 @@
  * will fork this and add some, and the fork should be safe by construction.
  */
 import { RULES, RULES_BY_ID } from './rules.js';
+import { detectTable, tableSeverity, describeTable } from './tabular.js';
+import { exposureScore, BAND_TEXT } from './risk.js';
+import { regimesFor, regimeNames } from './regulations.js';
+
+/**
+ * Hard limits. A content script shares a thread with someone's actual work, so
+ * "slow" and "crashed" are the same outcome to them. Everything below is a
+ * ceiling that trades completeness for never hanging the page.
+ */
+const MAX_SCAN_BYTES = 2_000_000;   // beyond this we scan a prefix and say so
+const MAX_MATCHES_PER_RULE = 500;   // a pathological input cannot spin forever
+const MAX_TOTAL_FINDINGS = 2000;
 
 const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
 const CONFIDENCE_RANK = { certain: 3, likely: 2, possible: 1 };
@@ -74,15 +86,23 @@ function resolveOverlaps(findings) {
   return kept.sort((a, b) => a.start - b.start);
 }
 
-export function scan(text, policy = {}) {
+export function scan(input, policy = {}) {
   const p = { ...DEFAULT_POLICY, ...policy };
   const disabled = new Set(p.disabled);
   const allow = new Set(p.allow);
   const raw = [];
 
-  if (typeof text !== 'string' || text.length === 0) {
-    return { findings: [], counts: {}, verdict: 'clean', scanned: 0 };
+  if (typeof input !== 'string' || input.length === 0) {
+    return {
+      findings: [], counts: {}, verdict: 'clean', scanned: 0, truncated: false,
+      table: null, risk: exposureScore([], null), regimes: [], regimeNames: [],
+      advisories: [], errors: [],
+    };
   }
+
+  const truncated = input.length > MAX_SCAN_BYTES;
+  const text = truncated ? input.slice(0, MAX_SCAN_BYTES) : input;
+  const errors = [];
 
   for (const rule of RULES) {
     if (disabled.has(rule.id)) continue;
@@ -91,38 +111,57 @@ export function scan(text, policy = {}) {
     // xoxb-), so on ordinary prose the overwhelming majority are skipped
     // outright. This is what keeps an 81-detector scan cheap on a large paste.
     if (rule.prefilter && !rule.prefilter.some((needle) => text.includes(needle))) continue;
-    // Each scan gets its own regex so lastIndex is never shared across calls.
-    const re = new RegExp(rule.pattern.source, rule.pattern.flags);
-    let m;
-    while ((m = re.exec(text)) !== null) {
-      // Zero-length matches would spin forever.
-      if (m[0].length === 0) { re.lastIndex++; continue; }
+    if (raw.length >= MAX_TOTAL_FINDINGS) break;
 
-      const groupIndex = rule.group ?? (m[1] !== undefined ? 1 : 0);
-      const value = m[groupIndex] ?? m[0];
-      if (!value) continue;
-      const start = m.index + m[0].indexOf(value);
-      const end = start + value.length;
+    // Every rule runs inside its own try/catch. One malformed pattern, one
+    // validator that throws on an input nobody anticipated, must degrade that
+    // single detector — never the scan, and never the page the scan runs in.
+    try {
+      // Each scan gets its own regex so lastIndex is never shared across calls.
+      const re = new RegExp(rule.pattern.source, rule.pattern.flags);
+      let m;
+      let hits = 0;
+      while ((m = re.exec(text)) !== null) {
+        if (++hits > MAX_MATCHES_PER_RULE) break;
+        // Zero-length matches would spin forever.
+        if (m[0].length === 0) { re.lastIndex++; continue; }
 
-      if (allow.has(value)) continue;
+        const groupIndex = rule.group ?? (m[1] !== undefined ? 1 : 0);
+        const value = m[groupIndex] ?? m[0];
+        if (!value) continue;
+        const start = m.index + m[0].indexOf(value);
+        const end = start + value.length;
 
-      const ctx = { text, index: start, full: m[0] };
-      if (rule.validate && !rule.validate(value, ctx)) continue;
+        if (allow.has(value)) continue;
 
-      const extra = rule.enrich ? rule.enrich(value, ctx) : {};
-      raw.push({
-        ruleId: rule.id,
-        label: rule.label,
-        severity: extra.severity ?? rule.severity,
-        confidence: extra.confidence ?? rule.confidence,
-        note: extra.note ?? rule.note ?? null,
-        start,
-        end,
-        match: value,
-        preview: mask(value),
-        fingerprint: fingerprint(value),
-        line: line(text, start),
-      });
+        const ctx = { text, index: start, full: m[0] };
+        let extra = {};
+        try {
+          if (rule.validate && !rule.validate(value, ctx)) continue;
+          if (rule.enrich) extra = rule.enrich(value, ctx) || {};
+        } catch (err) {
+          errors.push({ ruleId: rule.id, stage: 'validate', message: String(err && err.message) });
+          continue;
+        }
+
+        raw.push({
+          ruleId: rule.id,
+          label: rule.label,
+          severity: extra.severity ?? rule.severity,
+          confidence: extra.confidence ?? rule.confidence,
+          note: extra.note ?? rule.note ?? null,
+          advisory: Boolean(rule.advisory),
+          audience: rule.audience ?? null,
+          start,
+          end,
+          match: value,
+          preview: rule.advisory ? value.slice(0, 64) : mask(value),
+          fingerprint: fingerprint(value),
+          line: line(text, start),
+        });
+      }
+    } catch (err) {
+      errors.push({ ruleId: rule.id, stage: 'match', message: String(err && err.message) });
     }
   }
 
@@ -130,13 +169,96 @@ export function scan(text, policy = {}) {
   const counts = {};
   for (const f of findings) counts[f.severity] = (counts[f.severity] || 0) + 1;
 
+  // Bulk-record detection runs last and gets a probe into the same engine,
+  // with context rules off: a column is classified by its values, and a
+  // document-level signal is not a property of a single cell.
+  let table = null;
+  if (p.tables !== false) {
+    try {
+      table = detectTable(text, (cell) => scanCell(cell, disabled, allow));
+    } catch (err) {
+      errors.push({ ruleId: 'table', stage: 'detect', message: String(err && err.message) });
+    }
+  }
+
   const blockSet = new Set(p.block);
   const warnSet = new Set(p.warn);
   let verdict = 'clean';
   if (findings.some((f) => blockSet.has(f.severity))) verdict = 'block';
   else if (findings.some((f) => warnSet.has(f.severity))) verdict = 'warn';
+  if (table) {
+    const sev = tableSeverity(table.rows);
+    if (blockSet.has(sev)) verdict = 'block';
+    else if (verdict === 'clean' && warnSet.has(sev)) verdict = 'warn';
+    table.severity = sev;
+    table.description = describeTable(table);
+  }
 
-  return { findings, counts, verdict, scanned: text.length };
+  const risk = exposureScore(findings, table);
+
+  return {
+    findings,
+    groups: groupFindings(findings),
+    advisories: findings.filter((f) => f.advisory),
+    counts,
+    verdict,
+    scanned: text.length,
+    truncated,
+    table,
+    risk,
+    band: BAND_TEXT[risk.band],
+    regimes: regimesFor(findings, table),
+    regimeNames: regimeNames(findings, table),
+    errors,
+  };
+}
+
+/**
+ * Collapses findings by detector for display.
+ *
+ * `findings` stays complete because redaction needs every span. What a person
+ * reads should be one row per detector with a count: a pasted customer export
+ * produces 368 findings and exactly two facts.
+ */
+export function groupFindings(findings) {
+  const by = new Map();
+  for (const f of findings) {
+    const row = by.get(f.ruleId);
+    if (row) { row.occurrences++; continue; }
+    by.set(f.ruleId, {
+      ruleId: f.ruleId, label: f.label, severity: f.severity,
+      confidence: f.confidence, advisory: f.advisory, audience: f.audience,
+      note: f.note, preview: f.preview, line: f.line, occurrences: 1,
+    });
+  }
+  const rank = { critical: 4, high: 3, medium: 2, low: 1 };
+  return [...by.values()].sort((a, b) =>
+    (rank[b.severity] - rank[a.severity]) || (b.occurrences - a.occurrences));
+}
+
+/**
+ * A minimal scan used only to classify a table cell. Skips context signals and
+ * table detection, so column inference cannot recurse or be skewed by
+ * document-level language appearing inside one cell.
+ */
+function scanCell(cell, disabled, allow) {
+  const out = [];
+  if (typeof cell !== 'string' || !cell || cell.length > 400) return out;
+  for (const rule of RULES) {
+    if (rule.advisory || disabled.has(rule.id)) continue;
+    if (rule.prefilter && !rule.prefilter.some((n) => cell.includes(n))) continue;
+    try {
+      const re = new RegExp(rule.pattern.source, rule.pattern.flags);
+      const m = re.exec(cell);
+      if (!m) continue;
+      const value = m[rule.group ?? (m[1] !== undefined ? 1 : 0)] ?? m[0];
+      if (!value || allow.has(value)) continue;
+      const ctx = { text: cell, index: m.index, full: m[0] };
+      if (rule.validate && !rule.validate(value, ctx)) continue;
+      out.push({ ruleId: rule.id });
+    } catch { /* one rule failing must not break column inference */ }
+  }
+  return out;
 }
 
 /** One-line human summary, e.g. "1 AWS access key ID, 2 email addresses". */

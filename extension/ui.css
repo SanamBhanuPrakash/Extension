@@ -30,7 +30,7 @@
   --wash-c: rgba(196, 40, 63, .09);
   --radius: 14px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --sans: 'Inter var', ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -60,6 +60,8 @@ body {
   font: 400 13px/1.55 var(--sans);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv05' 1, 'ss03' 1;  /* single-storey l, curved r */
+  font-variant-numeric: tabular-nums;
   position: relative;
   background: var(--page);
 }

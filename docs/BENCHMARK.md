@@ -10,7 +10,7 @@ seed 20260925 · 424 cases · 241 positive · 183 hard negative
   recall      100.0%   0 missed
   F1          100.0%
 
-  46,206 byte document scanned in 2.97ms (15.6 MB/s), 81 detectors
+  46,206 byte document scanned in 5.8ms (8 MB/s), 92 detectors
 ```
 
 ## Why this file exists

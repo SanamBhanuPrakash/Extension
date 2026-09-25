@@ -23,7 +23,10 @@ function tokenName(ruleId, n) {
  *   reversal table is returned separately by `redactReversible`.
  */
 export function redact(text, findings) {
-  const list = findings ?? scan(text).findings;
+  // Advisory findings are context, not secrets. Replacing the word
+  // "CONFIDENTIAL" with a placeholder helps nobody, and removing the figure
+  // from "ARR is £4.2M" would destroy the question being asked.
+  const list = (findings ?? scan(text).findings).filter((f) => !f.advisory);
   if (list.length === 0) return { text, map: [], changed: 0 };
 
   const assigned = new Map(); // secret value -> token
@@ -55,7 +58,7 @@ export function redact(text, findings) {
  * nowhere else.
  */
 export function redactReversible(text, findings) {
-  const list = findings ?? scan(text).findings;
+  const list = (findings ?? scan(text).findings).filter((f) => !f.advisory);
   const result = redact(text, list);
   const table = new Map();
   const assigned = new Map();

@@ -335,3 +335,128 @@ test('the benchmark holds at or above its published figures', async () => {
   assert.ok(precision >= 0.99, `precision regressed to ${(precision * 100).toFixed(2)}%`);
   assert.ok(recall >= 0.99, `recall regressed to ${(recall * 100).toFixed(2)}%`);
 });
+
+// ══════════════════════════════════════════════ bulk records and context
+test('a pasted customer export is one bulk finding, not hundreds', () => {
+  const csv = ['customer_id,name,email,phone,city',
+    ...Array.from({ length: 150 }, (_, i) =>
+      `${9000 + i},Customer ${i},c${i}@northwind.co.in,9${String(812345670 + i)},Pune`)].join('\n');
+  const r = scan(csv);
+  assert.ok(r.table, 'table detected');
+  assert.equal(r.table.rows, 150);
+  assert.equal(r.table.severity, 'critical');
+  assert.match(r.table.description, /150 records of personal data/);
+  // 300 raw findings collapse to two display rows.
+  assert.ok(r.findings.length > 100);
+  assert.equal(r.groups.length, 2);
+  assert.ok(r.groups.every((g) => g.occurrences === 150));
+  assert.ok(r.regimeNames.includes('GDPR'));
+});
+
+test('column meaning is inferred from values when headers are useless', async () => {
+  const { detectTable } = await import('../src/tabular.js');
+  const blind = ['c1,c2,c3',
+    ...Array.from({ length: 30 }, (_, i) => `${i},user${i}@acmecorp.io,4111111111111111`)].join('\n');
+  const t = detectTable(blind, (cell) => scan(cell).findings);
+  assert.ok(t, 'detected without usable headers');
+  assert.deepEqual(t.columns.map((c) => c.kind), [null, 'email', 'card']);
+});
+
+test('prose that merely contains commas is not a table', async () => {
+  const { detectTable } = await import('../src/tabular.js');
+  const prose = `We could meet on Tuesday, Wednesday, or Friday.
+That works for me, thanks for checking.
+See you then, and all the best.
+Regards, the platform team`;
+  assert.equal(detectTable(prose, (c) => scan(c).findings), null);
+});
+
+test('a board note trips legal, market-conduct and financial signals', () => {
+  const r = scan(`PRIVILEGED AND CONFIDENTIAL — DO NOT DISTRIBUTE
+ARR closed at $4.2M with 14 months runway. We signed the term sheet Tuesday and
+the data room opens Monday. Material non-public information until the 14th.`);
+  const ids = r.groups.map((g) => g.ruleId);
+  assert.ok(ids.includes('legal_privilege'));
+  assert.ok(ids.includes('mnpi'));
+  assert.ok(ids.includes('deal_material'));
+  assert.ok(ids.includes('financial_disclosure'));
+  assert.ok(r.risk.score >= 70, `expected severe, got ${r.risk.score}`);
+  for (const regime of ['SEC', 'SEBI', 'UK MAR']) assert.ok(r.regimeNames.includes(regime));
+});
+
+test('financial vocabulary without a figure is not a disclosure', () => {
+  const ids = scan('We should improve gross margin and reduce churn rate next year.')
+    .findings.map((f) => f.ruleId);
+  assert.ok(!ids.includes('financial_disclosure'));
+});
+
+test('advisory findings are reported but never redacted', () => {
+  const text = 'CONFIDENTIAL — the key is AKIAIOSFODNN7EXAMPLE';
+  const r = scan(text);
+  assert.ok(r.findings.some((f) => f.ruleId === 'classification_marking' && f.advisory));
+  const out = redact(text, r.findings).text;
+  assert.ok(out.startsWith('CONFIDENTIAL'), 'the marking survives redaction');
+  assert.ok(out.includes('<AWS_ACCESS_KEY_ID_1>'), 'the secret does not');
+});
+
+test('a password in a sentence is caught; a connection string is not double-reported', () => {
+  assert.ok(scan('the service account password is Tr0ub4dor&3 for now')
+    .findings.some((f) => f.ruleId === 'credential_in_prose'));
+  const ids = scan('set DATABASE_URL=postgres://user:password@localhost:5432/dev')
+    .findings.map((f) => f.ruleId);
+  assert.ok(!ids.includes('credential_in_prose'), 'password@host is not a written-out password');
+});
+
+test('the exposure score is bounded, ordered and explainable', async () => {
+  const { exposureScore } = await import('../src/risk.js');
+  assert.equal(exposureScore([], null).score, 0);
+  const mild = scan('contact ops@northwind.co.in').risk.score;
+  const severe = scan('AKIAIOSFODNN7EXAMPLE and 4242424242424242 and sk_live_' + 'a'.repeat(24)).risk.score;
+  assert.ok(mild < severe, `${mild} should be below ${severe}`);
+  assert.ok(severe <= 100 && severe >= 0);
+  assert.ok(scan('AKIAIOSFODNN7EXAMPLE').risk.drivers.length >= 1);
+});
+
+// ═══════════════════════════════════════════════════════════ crash safety
+test('scan survives every malformed input', () => {
+  for (const bad of [null, undefined, 123, {}, [], NaN, true, Symbol.iterator]) {
+    const r = scan(bad);
+    assert.equal(r.verdict, 'clean');
+    assert.deepEqual(r.findings, []);
+  }
+});
+
+test('a huge paste is truncated rather than hanging', () => {
+  const huge = 'lorem ipsum dolor sit amet '.repeat(120000); // ~3.2 MB
+  const started = Date.now();
+  const r = scan(huge);
+  assert.equal(r.truncated, true);
+  assert.ok(r.scanned <= 2_000_000);
+  assert.ok(Date.now() - started < 5000, 'must not hang');
+});
+
+test('a rule that throws degrades only itself', async () => {
+  const { RULES } = await import('../src/rules.js');
+  const victim = RULES.find((r) => r.id === 'email');
+  const original = victim.validate;
+  victim.validate = () => { throw new Error('boom'); };
+  try {
+    const r = scan('AKIAIOSFODNN7EXAMPLE and ops@northwind.co.in');
+    assert.ok(r.findings.some((f) => f.ruleId === 'aws_access_key_id'), 'other rules still ran');
+    assert.ok(!r.findings.some((f) => f.ruleId === 'email'), 'the broken rule produced nothing');
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.errors[0].ruleId, 'email');
+  } finally {
+    victim.validate = original;
+  }
+});
+
+test('table detection is bounded on a very wide, very long export', () => {
+  const cols = Array.from({ length: 60 }, (_, i) => `col_${i}`).join(',');
+  const row = Array.from({ length: 60 }, (_, i) => (i === 3 ? 'a@b.co' : `v${i}`)).join(',');
+  const big = [cols, ...Array.from({ length: 5000 }, () => row)].join('\n');
+  const started = Date.now();
+  const r = scan(big);
+  assert.ok(Date.now() - started < 5000, 'wide+long export must not hang');
+  assert.ok(r.findings.length <= 2000, 'finding count is capped');
+});

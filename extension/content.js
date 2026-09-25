@@ -12,9 +12,19 @@
  */
 (async () => {
   const url = (p) => chrome.runtime.getURL(p);
-  const { scan } = await import(url('engine/detect.js'));
+  const { scan, groupFindings } = await import(url('engine/detect.js'));
+  const { exposureScore, BAND_TEXT } = await import(url('engine/risk.js'));
   const { redact } = await import(url('engine/redact.js'));
   const store = await import(url('store.js'));
+
+  // panel.css is injected by the manifest, but a relative url() inside it
+  // would resolve against the host page's origin. The face is declared here
+  // instead, against the real extension URL.
+  try {
+    const face = new FontFace('Inter var', `url(${url('fonts/inter.woff2')})`,
+      { weight: '100 900', display: 'block' });
+    face.load().then((f) => document.fonts.add(f)).catch(() => {});
+  } catch { /* no FontFace support: panel.css falls back to system sans */ }
 
   const DEFAULTS = { mode: 'warn', disabled: [], allow: [] };
   let policy = DEFAULTS;
@@ -76,22 +86,28 @@
   const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low'];
 
   /**
-   * The header is a count, not a list. Naming all seven findings produced a
-   * four-line heading that pushed the actual findings below the fold — the
-   * grouped body is what explains, so the header only has to land the alarm.
+   * The subtitle under the score. A count, never an enumeration: naming all
+   * seven findings produced a four-line heading that pushed the findings
+   * themselves below the fold.
    */
-  function headline(findings, where) {
-    if (findings.length === 1) return `${findings[0].label} ${where}`;
-    const blocking = findings.filter((f) => f.severity === 'critical' || f.severity === 'high').length;
-    if (blocking && blocking < findings.length) {
-      return `${findings.length} things ${where}, ${blocking} of them sensitive`;
-    }
-    return `${findings.length} things ${where}`;
+  function headline(result, where) {
+    if (result.table) return `${result.table.rows.toLocaleString()} records ${where}`;
+    const groups = result.groups;
+    if (!groups.length) return `Nothing found ${where}`;
+    if (groups.length === 1 && groups[0].occurrences === 1) return `${groups[0].label} ${where}`;
+    const total = groups.reduce((n, g) => n + g.occurrences, 0);
+    const sensitive = groups
+      .filter((g) => g.severity === 'critical' || g.severity === 'high')
+      .reduce((n, g) => n + g.occurrences, 0);
+    return sensitive && sensitive < total
+      ? `${total} things ${where}, ${sensitive} of them sensitive`
+      : `${total} things ${where}`;
   }
+
   const SEVERITY_TITLE = {
     critical: 'Can be used against you immediately',
     high: 'Sensitive',
-    medium: 'Looks like a credential',
+    medium: 'Worth knowing about',
     low: 'Personal, lower risk',
   };
 
@@ -103,68 +119,106 @@
     return node;
   }
 
-  function showPanel({ findings, verdict, title, onRedact, onProceed, onDismiss,
+  /**
+   * The panel leads with one number.
+   *
+   * Asked to judge a list of nine items in the two seconds before pressing
+   * Enter, most people press Enter. A 0-100 score with one sentence under it
+   * is a decision someone can actually make at speed; the detail below is for
+   * whoever wants it.
+   */
+  function showPanel({ result, title, onRedact, onProceed, onDismiss,
                        redactLabel, proceedLabel }) {
     closePanel();
-    panel = el('div', `chhanni-panel chhanni-${verdict}`);
+    const { risk, band, table, groups, findings, regimeNames } = result;
+    const verdict = result.verdict;
+
+    panel = el('div', `chhanni-panel chhanni-${verdict} chhanni-band-${risk.band}`);
     panel.setAttribute('role', 'alertdialog');
-    panel.setAttribute('aria-modal', 'false');
     panel.setAttribute('aria-live', 'assertive');
 
-    // Header
+    // ── score header ────────────────────────────────────────────────
     const head = el('div', 'chhanni-head');
-    head.append(el('i', 'chhanni-dot'), el('strong', null, title));
-    const close = el('button', 'chhanni-x', '×');
+    const gauge = el('div', 'chhanni-gauge');
+    gauge.append(el('b', null, String(risk.score)), el('span', null, '/100'));
+    gauge.setAttribute('aria-label', `Exposure score ${risk.score} out of 100`);
+
+    const headText = el('div', 'chhanni-headtext');
+    headText.append(el('strong', null, band || title));
+    headText.append(el('p', null, title));
+    head.append(gauge, headText);
+
+    const close = el('button', 'chhanni-x', '\u00d7');
     close.setAttribute('aria-label', 'Dismiss');
     close.onclick = () => { closePanel(); record('dismissed'); onDismiss?.(); };
     head.appendChild(close);
     panel.appendChild(head);
 
-    // Findings, grouped by severity so the dangerous things are not buried
-    // under a list of email addresses.
     const body = el('div', 'chhanni-body');
-    const grouped = new Map();
-    for (const f of findings) {
-      if (!grouped.has(f.severity)) grouped.set(f.severity, []);
-      grouped.get(f.severity).push(f);
+
+    // ── bulk disclosure, when there is one ──────────────────────────
+    if (table) {
+      const bulk = el('div', 'chhanni-bulk');
+      bulk.append(el('h3', null, 'Bulk disclosure'), el('p', null, table.description));
+      body.appendChild(bulk);
+    }
+
+    // ── which law this touches ──────────────────────────────────────
+    if (regimeNames && regimeNames.length) {
+      const regs = el('div', 'chhanni-regimes');
+      regs.appendChild(el('h3', null, 'Regulated under'));
+      const chips = el('div', 'chhanni-chips');
+      for (const name of regimeNames.slice(0, 5)) chips.appendChild(el('span', 'chhanni-chip', name));
+      regs.appendChild(chips);
+      body.appendChild(regs);
+    }
+
+    // ── findings, collapsed by detector and grouped by severity ─────
+    const bySeverity = new Map();
+    for (const g of groups) {
+      if (!bySeverity.has(g.severity)) bySeverity.set(g.severity, []);
+      bySeverity.get(g.severity).push(g);
     }
     for (const severity of SEVERITY_ORDER) {
-      const group = grouped.get(severity);
+      const group = bySeverity.get(severity);
       if (!group) continue;
-      const section = el('div', `chhanni-group chhanni-sev-${severity}`);
-      section.appendChild(el('h3', null, SEVERITY_TITLE[severity]));
-
       if (severity === 'low') {
-        // The noisy tail collapses to one line and is hoisted out of the
-        // scroll area, so it stays visible without scrolling past the
-        // dangerous findings above it.
-        const labels = [...new Set(group.map((f) => f.label))].join(', ');
+        const labels = [...new Set(group.map((g) => g.label))].join(', ');
         panel.dataset.alsoText = `Also found, lower risk: ${labels}.`;
         continue;
-      } else {
-        const list = el('ul');
-        for (const f of group.slice(0, 6)) {
-          const li = el('li');
-          const row = el('div', 'chhanni-row');
-          row.append(el('span', 'chhanni-label', f.label), el('code', null, f.preview));
-          li.appendChild(row);
-          if (f.note) li.appendChild(el('em', null, f.note));
-          list.appendChild(li);
-        }
-        if (group.length > 6) list.appendChild(el('li', 'chhanni-more', `and ${group.length - 6} more`));
-        section.appendChild(list);
       }
+      const section = el('div', `chhanni-group chhanni-sev-${severity}`);
+      section.appendChild(el('h3', null, SEVERITY_TITLE[severity]));
+      const list = el('ul');
+      for (const g of group.slice(0, 6)) {
+        const li = el('li');
+        const row = el('div', 'chhanni-row');
+        const label = el('span', 'chhanni-label', g.label);
+        if (g.occurrences > 1) label.appendChild(el('i', 'chhanni-count', `\u00d7${g.occurrences}`));
+        row.appendChild(label);
+        // Advisory findings are context, not secrets, so there is nothing to mask.
+        row.appendChild(el('code', g.advisory ? 'chhanni-quote' : null, g.preview));
+        li.appendChild(row);
+        if (g.note) li.appendChild(el('em', null, g.note));
+        list.appendChild(li);
+      }
+      if (group.length > 6) list.appendChild(el('li', 'chhanni-more', `and ${group.length - 6} more`));
+      section.appendChild(list);
       body.appendChild(section);
     }
     panel.appendChild(body);
+
     if (panel.dataset.alsoText) {
       panel.appendChild(el('div', 'chhanni-also', panel.dataset.alsoText));
     }
 
-    // Actions
+    // ── actions ─────────────────────────────────────────────────────
+    const redactable = findings.filter((f) => !f.advisory).length;
     const actions = el('div', 'chhanni-actions');
     const redactBtn = el('button', 'chhanni-primary',
-      redactLabel || `Redact ${findings.length} and continue`);
+      redactLabel || (redactable
+        ? `Redact ${redactable} and continue`
+        : 'I understand, continue'));
     redactBtn.onclick = () => { closePanel(); record('redacted'); onRedact(); };
     const proceedBtn = el('button', 'chhanni-ghost', proceedLabel || 'Send as-is');
     proceedBtn.onclick = () => { closePanel(); record('sent'); onProceed(); };
@@ -172,7 +226,8 @@
     panel.appendChild(actions);
 
     const hint = el('div', 'chhanni-hint');
-    hint.append(el('kbd', null, 'Enter'), document.createTextNode(' redact  ·  '),
+    hint.append(el('kbd', null, 'Enter'),
+      document.createTextNode(redactable ? ' redact  \u00b7  ' : ' continue  \u00b7  '),
       el('kbd', null, 'Esc'), document.createTextNode(' back to editing'));
     panel.appendChild(hint);
 
@@ -184,7 +239,8 @@
     redactBtn.focus();
 
     function record(action) {
-      store.record(findings, { host: location.hostname, action }).catch(() => {});
+      store.record(findings.filter((f) => !f.advisory), { host: location.hostname, action })
+        .catch(() => {});
     }
 
     onKey = (e) => {
@@ -222,9 +278,8 @@
     };
 
     showPanel({
-      findings: result.findings,
-      verdict: result.verdict,
-      title: headline(result.findings, 'in what you pasted'),
+      result,
+      title: headline(result, 'in what you pasted'),
       onRedact: () => insert(redact(text, result.findings).text),
       onProceed: () => insert(text),
     });
@@ -266,7 +321,7 @@
       try { text = await file.text(); } catch { reports.push({ file, skipped: true, findings: [] }); continue; }
       if (text.includes('\u0000')) { reports.push({ file, skipped: true, findings: [] }); continue; }
       const result = scan(text, policy);
-      reports.push({ file, text, findings: result.findings, verdict: result.verdict });
+      reports.push({ file, text, ...result });
     }
     return reports;
   }
@@ -298,9 +353,19 @@
     const dirty = reports.filter((r) => r.findings.length);
     const names = dirty.map((r) => r.file.name).join(', ');
 
-    showPanel({
+    // Merge the per-file scans into one result the panel can render.
+    const merged = {
       findings: all,
+      groups: groupFindings(all),
       verdict: all.some((f) => f.severity === 'critical') ? 'block' : 'warn',
+      risk: exposureScore(all, reports.find((r) => r.table)?.table || null),
+      table: reports.find((r) => r.table)?.table || null,
+      regimeNames: [...new Set(reports.flatMap((r) => r.regimeNames || []))],
+    };
+    merged.band = BAND_TEXT[merged.risk.band];
+
+    showPanel({
+      result: merged,
       title: all.length === 1
         ? `${all[0].label} in ${names}`
         : `${all.length} things in ${dirty.length === 1 ? names : `${dirty.length} attached files`}`,
@@ -369,9 +434,8 @@
     const text = readComposer(target);
 
     showPanel({
-      findings: result.findings,
-      verdict: result.verdict,
-      title: headline(result.findings, 'about to be sent'),
+      result,
+      title: headline(result, 'about to be sent'),
       onRedact: () => writeComposer(target, redact(text, result.findings).text),
       onProceed: () => {
         bypassUntil = Date.now() + 2000;

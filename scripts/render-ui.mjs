@@ -93,6 +93,17 @@ const stub = `
     runtime:{ getURL:(p)=>'/'+p, openOptionsPage:()=>{} },
   };`;
 
+const BULK = ['customer_id,name,email,phone,city',
+  ...Array.from({ length: 184 }, (_, i) =>
+    `${9000 + i},Customer ${i},c${i}@northwind.co.in,9${String(812345670 + i)},Pune`)].join('\n');
+
+const BOARD = `PRIVILEGED AND CONFIDENTIAL \u2014 DO NOT DISTRIBUTE
+
+Board, ahead of Thursday: ARR closed the quarter at $4.2M, up 31%. Cash runway
+is 14 months at current burn. We signed the term sheet with Meridian on Tuesday;
+due diligence opens next week and the data room goes live Monday. This is
+material non-public information until the announcement on the 14th.`;
+
 const LEAK = `Deploy is failing, can you spot the problem?
 
   AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
@@ -129,22 +140,24 @@ async function shot(name, file, width, dark, prep) {
   await page.close();
 }
 
-const firePaste = async (page) => {
+const firePaste = (payload = LEAK) => async (page) => {
   await page.click('#c');
   await page.evaluate((text) => {
     const dt = new DataTransfer();
     dt.setData('text/plain', text);
     document.getElementById('c').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-  }, LEAK);
-  await page.waitForSelector('.chhanni-panel', { timeout: 3000 });
-  await page.waitForTimeout(350);
-  return `panel shown, composer="${await page.inputValue('#c')}"`;
+  }, payload);
+  await page.waitForSelector('.chhanni-panel', { timeout: 5000 });
+  await page.waitForTimeout(400);
+  return `panel shown, composer="${await page.inputValue('#c').then((v) => v.slice(0, 20))}"`;
 };
 
 await shot('popup-light', 'popup.html', 360, false);
 await shot('popup-dark', 'popup.html', 360, true);
-await shot('panel-dark', 'harness.html', 900, true, firePaste);
-await shot('panel-light', 'harness.html', 900, false, firePaste);
+await shot('panel-dark', 'harness.html', 900, true, firePaste());
+await shot('panel-light', 'harness.html', 900, false, firePaste());
+await shot('panel-bulk', 'harness.html', 900, true, firePaste(BULK));
+await shot('panel-board', 'harness.html', 900, true, firePaste(BOARD));
 await shot('options-dark', 'options.html', 800, true, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
 await shot('options-light', 'options.html', 800, false, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
 
@@ -152,8 +165,10 @@ await shot('options-light', 'options.html', 800, false, async (p) => { await p.c
 const page = await browser.newPage({ viewport:{width:900,height:820} });
 await page.addInitScript(stub);
 await page.goto('http://127.0.0.1:8731/harness.html');
-await page.waitForTimeout(400);
-await firePaste(page);
+// The content script dynamic-imports eleven engine modules plus the font.
+await page.waitForTimeout(900);
+await firePaste()(page);
+await page.waitForSelector('.chhanni-primary', { timeout: 8000 });
 await page.click('.chhanni-primary');
 await page.waitForTimeout(300);
 const final = await page.inputValue('#c');

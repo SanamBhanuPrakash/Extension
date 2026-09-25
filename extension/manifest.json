@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Chhanni — sieve your prompts",
+  "name": "Chhanni \u2014 sieve your prompts",
   "version": "0.1.0",
   "description": "Catches API keys, credentials and personal data in your prompt before it leaves your browser. Nothing is ever sent anywhere.",
   "permissions": [
@@ -49,7 +49,8 @@
     {
       "resources": [
         "engine/*.js",
-        "store.js"
+        "store.js",
+        "fonts/*"
       ],
       "matches": [
         "https://*/*"

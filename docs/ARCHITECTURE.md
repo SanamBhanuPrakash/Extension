@@ -53,7 +53,7 @@ Strictly layered, no cycles. Each layer may import only from below.
       │
   detect.js             scanning, prefiltering, overlap resolution, masking
       │
-  rules.js              the 81 detectors, with prefilters, categories, proofs
+  rules.js              the 92 detectors, with prefilters, categories, proofs
       │
       ├── checksums.js    Luhn, Verhoeff, mod-97, CRC32, entropy, issuer ranges
       ├── identifiers.js  national IDs, AWS account decoding
@@ -111,15 +111,15 @@ accepts roughly 1 in 10 random numbers of the right length. It is the
 Most detectors are anchored on a literal nothing else uses — `AKIA`, `ghp_`,
 `xoxb-`, `sk-ant-`. Before compiling and running a backtracking regex, the
 scanner asks whether that literal appears in the text at all. On ordinary prose
-the overwhelming majority of the 81 detectors are skipped outright.
+the overwhelming majority of the 92 detectors are skipped outright.
 
 This is purely an optimisation and must never change a result, which is not a
 promise worth making without a test behind it: `test/detect.test.js` scans a set
 of samples twice, once with every prefilter stripped, and asserts the findings
 are identical.
 
-Measured: a 46 KB document scanned in ~3.0 ms, about 15 MB/s, with all 81
-detectors enabled.
+Measured: a 46 KB document scanned in ~5.8ms, about 8 MB/s, with all 92
+detectors enabled — table detection included.
 
 ## Surfaces
 
@@ -270,7 +270,7 @@ across 47 catches without ever holding one.
 
 ## Scanning cost
 
-`scan()` is O(rules x text). Thirty regexes over a prompt-sized string is
+`scan()` is O(rules x text), plus one bounded pass for table detection. Ninety-two detectors over a prompt-sized string is
 roughly 0.3ms for 2KB, which is why the design can afford to be synchronous and
 avoid a service worker entirely.
 

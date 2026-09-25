@@ -123,36 +123,66 @@ function runPlayground() {
   }
 
   const result = scan(text, policy);
-  const verdict = document.createElement('div');
-  verdict.className = `verdict ${result.verdict}`;
-  verdict.textContent = result.verdict === 'clean' ? 'clean'
-    : result.verdict === 'block' ? 'would stop you' : 'would warn';
-  out.appendChild(verdict);
 
-  if (!result.findings.length) {
+  // Lead with the score, exactly as the in-page panel does.
+  const scoreRow = document.createElement('div');
+  scoreRow.className = `score band-${result.risk.band}`;
+  const num = document.createElement('b');
+  num.textContent = String(result.risk.score);
+  const den = document.createElement('span');
+  den.textContent = '/100';
+  const verdict = document.createElement('em');
+  verdict.textContent = result.verdict === 'clean' ? 'nothing to stop for'
+    : result.verdict === 'block' ? 'would stop you' : 'would warn';
+  scoreRow.append(num, den, verdict);
+  out.appendChild(scoreRow);
+
+  if (result.table) {
+    const bulk = document.createElement('p');
+    bulk.className = 'bulk';
+    bulk.textContent = result.table.description;
+    out.appendChild(bulk);
+  }
+  if (result.regimeNames.length) {
+    const chips = document.createElement('div');
+    chips.className = 'chips';
+    for (const name of result.regimeNames.slice(0, 6)) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = name;
+      chips.appendChild(chip);
+    }
+    out.appendChild(chips);
+  }
+
+  if (!result.groups.length) {
     const p = document.createElement('div');
     p.className = 'none';
     p.textContent = 'Nothing found.';
     out.appendChild(p);
   } else {
     const ul = document.createElement('ul');
-    for (const f of result.findings) {
+    for (const g of result.groups) {
       const li = document.createElement('li');
       const b = document.createElement('b');
-      b.className = `sev-${f.severity}`;
-      b.textContent = f.label;
+      b.className = `sev-${g.severity}`;
+      b.textContent = g.label + (g.occurrences > 1 ? ` \u00d7${g.occurrences}` : '');
       const code = document.createElement('code');
-      code.textContent = f.preview;
+      code.textContent = g.preview;
       li.append(b, code);
       ul.appendChild(li);
     }
     out.appendChild(ul);
   }
-  $('counts').textContent = `${result.findings.length} found in ${text.length} characters`;
+  $('counts').textContent = `${result.findings.length} found in ${text.length.toLocaleString()} characters`;
 }
 
 $('sample').oninput = runPlayground;
-$('loadSample').onclick = () => { $('sample').value = EXAMPLE; runPlayground(); };
+$('loadSample').onclick = () => {
+  $('sample').value = EXAMPLES[exampleIndex % EXAMPLES.length];
+  exampleIndex++;
+  runPlayground();
+};
 $('redactBtn').onclick = () => {
   const text = $('sample').value;
   $('sample').value = redact(text).text;

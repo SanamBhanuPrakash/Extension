@@ -1,0 +1,23 @@
+/*
+ * Inter, bundled.
+ *
+ * Google Fonts, served from inside the extension rather than from
+ * fonts.googleapis.com. Loading a webfont over the network would hand the font
+ * host a request every time this UI opens — a request that carries the fact
+ * that you are being shown a warning — and would falsify the one promise this
+ * project makes: no network.
+ *
+ * Inter is OFL-1.1 licensed, so redistributing it here is permitted. It is the
+ * variable font, so a single 48 KB file covers every weight used.
+ *
+ * `font-display: block` on purpose: this UI appears for a few seconds during a
+ * decision, and a flash of fallback text mid-warning reads as a glitch. The
+ * file is local, so "block" costs nothing measurable.
+ */
+@font-face {
+  font-family: 'Inter var';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('inter.woff2') format('woff2');
+}
