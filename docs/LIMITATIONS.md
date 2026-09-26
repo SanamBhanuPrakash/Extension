@@ -229,7 +229,7 @@ panel says how much.
 A tool that fires constantly gets uninstalled in a week, whatever its benchmark
 says. So the benchmark measures the thing that actually decides that:
 
-**353 alarms across 87,306 real source files — one every 247 files, 0.40%.**
+**337 alarms across 87,306 real source files — one every 259 files, 0.39%.**
 
 Not findings; alarms. A file full of example email addresses produces findings
 and no alarm, because `low` on its own is not a reason to interrupt anybody.

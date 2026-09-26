@@ -63,13 +63,13 @@ decides whether anyone keeps this installed is how often the panel appears.
 | | alarms | one every | blocking |
 |---|---|---|---|
 | before | 405 | 216 files | 282 |
-| after | **353** | **247 files** | **228** |
+| after | **337** | **259 files** | **212** |
 
 Better precision *and* seven more detector classes. Nine false-positive
 classes fixed, every one a real line from a real repository and every one now
 pinned by a test carrying that exact string:
 
-- **`aadhaar` 135 → 66** — the middle of a UUID, an AWS account number (also
+- **`aadhaar` 135 → 46** — the middle of a UUID, an AWS account number (also
   twelve digits), a coordinate's decimals, a timestamp. Verhoeff accepts one
   random twelve-digit number in ten and this fires at *critical*.
 - **`payment_card` 96 → 9** — the fractional part of a latitude.
@@ -80,6 +80,11 @@ pinned by a test carrying that exact string:
   is what decides. Caught by a `.docx` fixture.
 - **`isin` 21 → 0** — the last group of an uppercase UUID. An ISIN starts with
   an ISO 3166 country code; `CB` is not one.
+- **`iban`** — mod-97 alone accepts about one string in ninety-seven of the
+  right shape. A benchmark seed found an Indian driving licence number,
+  `BB7120133083564`, validating as a Barbados IBAN; Barbados IBANs are 28
+  characters. Every country's IBAN length is fixed and published, so the
+  validator now checks it, which turns a one-in-97 guess into a real proof.
 - **`classification_marking` 53 → 15** — "This is for internal use only" is how
   every library labels a private API.
 - **`health_information` 7 → 0** — "a *prescribed* notification" in Go,
@@ -209,8 +214,13 @@ because a boundary nobody states is a boundary everybody crosses.
   extractor hands over the title first and "Master Services Agreement" has
   exactly the shape of a three-part name.
 - Ten-seed sweep: 4,244 cases, precision and recall both 100% — and the sweep
-  itself found a real miss on seed 20260927, where the leading twelve digits of
-  a Google OAuth client id were being read as an Aadhaar number.
+  itself found two real bugs, on seeds 20260927 and 77777: the leading twelve
+  digits of a Google OAuth client id read as an Aadhaar number, and an Indian
+  driving licence number read as a Barbados IBAN. Both are fixed and both now
+  have a test.
+- `tools/make-fixtures.py` writes a fixed timestamp into every ZIP entry, so
+  regenerating the fixtures is byte-identical and CI can check that the
+  committed ones match the generator.
 
 ## 0.2.0 — 2026-09-25
 

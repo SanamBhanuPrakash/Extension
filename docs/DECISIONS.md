@@ -466,8 +466,8 @@ measuring the thing that decides whether anyone keeps this installed.
 **Decision.** The benchmark counts how often `scan()` returns a verdict that
 would raise the panel, and prints both.
 
-**Why.** Warning fatigue is the failure mode. One alarm every 247 files across
-87,306 files is a claim about the product; 7,883 findings is a claim about the
+**Why.** Warning fatigue is the failure mode. One alarm every 259 files across
+87,306 files is a claim about the product; 7,863 findings is a claim about the
 engine, and only the first one matters to a person using it.
 
 **What it immediately caught.** Nine false-positive classes, two of them

@@ -50,10 +50,25 @@ jobs:
           fi
           node -e "
             const m = require('./dist/chrome/manifest.json');
-            if (JSON.stringify(m.permissions) !== '[\"storage\"]') {
-              console.error('permissions changed:', m.permissions); process.exit(1);
+            // 'scripting' is here for exactly one thing: registering this same
+            // content script on a site the person adds from the popup. It
+            // grants no network access. Anything beyond these two, or any
+            // network permission at all, fails the build.
+            const allowed = ['storage', 'scripting'];
+            const extra = m.permissions.filter((p) => !allowed.includes(p));
+            if (extra.length) { console.error('unexpected permissions:', extra); process.exit(1); }
+            const forbidden = ['webRequest', 'webRequestBlocking', 'proxy', 'declarativeNetRequest', 'cookies', 'history', 'downloads', 'clipboardRead'];
+            for (const p of forbidden.concat(m.host_permissions || [])) {
+              if (forbidden.includes(p) && m.permissions.includes(p)) { console.error('forbidden permission:', p); process.exit(1); }
             }
+            if (m.description.length > 132) { console.error('description is', m.description.length, 'characters; the store limit is 132'); process.exit(1); }
           "
+
+      - name: Document extraction, against real fixtures
+        run: |
+          python3 tools/make-fixtures.py
+          git diff --exit-code --stat -- test/fixtures \
+            || { echo "::error::the fixtures in test/fixtures do not match tools/make-fixtures.py"; exit 1; }
 
       - name: Chhanni scans itself
         run: node bin/chhanni.js scan src bin bench scripts --quiet --no-color || true

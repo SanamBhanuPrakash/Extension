@@ -894,3 +894,15 @@ test('a document title is not a person', async () => {
   assert.deepEqual(names('Priya Nair Agreement was signed'), ['Priya Nair']);
   assert.deepEqual(names('Anita Deshpande'), ['Anita Deshpande']);
 });
+
+test('an IBAN is the right length for its country, not merely mod-97 valid', () => {
+  // mod-97 alone accepts about one string in ninety-seven of the right shape.
+  // A benchmark seed found an Indian driving licence number, BB7120133083564,
+  // validating as a Barbados IBAN — Barbados IBANs are 28 characters.
+  assert.ok(has('IBAN GB82WEST12345698765432', 'iban'));
+  assert.ok(has('IBAN NO9386011117947', 'iban'), 'the shortest real IBAN, 15');
+  assert.ok(has('IBAN LC55HEMM000100010012001200023015', 'iban'), 'the longest, 32');
+  assert.ok(!has('export TOKEN=BB7120133083564', 'iban'));
+  assert.ok(!has('GB82WEST1234569876543', 'iban'), 'one character short');
+  assert.ok(!has('ZZ8212345698765432', 'iban'), 'ZZ is not a country');
+});

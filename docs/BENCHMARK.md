@@ -115,15 +115,15 @@ installed is how often the panel actually appears.
 $ node bench/wild.js /path/to/checkouts --show
   total
     87,306 files, 407.1 MB of real source
-    7,883 findings — one every 11 files
-    353 would raise the panel — one every 247 files, 0.40%
-    228 of those at blocking severity
+    7,863 findings — one every 11 files
+    337 would raise the panel — one every 259 files, 0.39%
+    212 of those at blocking severity
 ```
 
 |  | alarms | one every | blocking |
 |---|---|---|---|
 | before this round of fixes | 405 | 216 files | 282 |
-| after | **353** | **247 files** | **228** |
+| after | **337** | **259 files** | **212** |
 
 Better precision *and* seven more detector classes, which is the trade this
 benchmark exists to police.
@@ -135,9 +135,10 @@ carrying that exact string:
 
 | What fired | On what | Why it was wrong |
 |---|---|---|
-| `aadhaar` 135 → 66 | `namespace='11111111-2222-3333-4444-…'` | the middle of a UUID. Also AWS account numbers (also twelve digits), coordinates and timestamps. Verhoeff accepts one random twelve-digit number in ten, and this fires at *critical* |
+| `aadhaar` 135 → 46 | `namespace='11111111-2222-3333-4444-…'` | the middle of a UUID. Also AWS account numbers (also twelve digits), coordinates and timestamps. Verhoeff accepts one random twelve-digit number in ten, and this fires at *critical* |
 | `payment_card` 96 → 9 | `(0.0, -0.6358599286615808)` | the fractional part of a latitude: sixteen digits that pass Luhn in a Discover range. `\b` does not help, because `.` is not a word character |
 | `isin` 21 → 0 | `{4724A46A-3F20-5AAA-8180-CBD31D08E478}` | the last group of an uppercase UUID. An ISIN starts with an ISO 3166 country code; `CB` is not one |
+| `iban` | `export TOKEN=BB7120133083564` | mod-97 accepts about one string in 97 of the right shape. This is an Indian driving licence number, and Barbados IBANs are 28 characters. Every country's length is fixed and published |
 | `classification_marking` 53 → 15 | `This is for internal use only.` | how every library labels a private API. Ansible's config says it nine times |
 | `health_information` 7 → 0 | `a prescribed notification` (Go), `symptoms of bugs` (the Rust book) | medical words doing non-medical work — at *critical* severity |
 | `prompt_injection` 19 → 7 | `pretends to be the class it wraps` | Django's lazy object. Also `send the token to` in axios's docs, and `no system message:` in an Ansible log line |
@@ -264,7 +265,7 @@ distinct digits, because a twelve-digit test fixture reaches for
 distinct digits about once in ten thousand.
 
 That compounding is why the measured figure on 87,306 real files is one alarm
-every 247 files. It is not zero, and a tool that claims zero false positives on
+every 259 files. It is not zero, and a tool that claims zero false positives on
 real-world input is either not measuring or not telling you.
 
 ## What these numbers do *not* say

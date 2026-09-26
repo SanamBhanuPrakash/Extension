@@ -29,7 +29,7 @@ project was in two versions ago.
 
 - **102 detectors. 28 prove the match** with a check digit, an offline decode,
   an issuer range or a trained classifier. 100% precision and recall over 4,244
-  reproducible cases — and one alarm every 247 files across **87,306 files of
+  reproducible cases — and one alarm every 259 files across **87,306 files of
   real public source**, which is the number that actually matters.
 - **Names and addresses in prose**: F1 98.9% and 100% across 34 annotated
   documents in eight scripts.

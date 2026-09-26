@@ -129,7 +129,7 @@ allowed to reject:
      finding
 ```
 
-Filters 3–5 are why this fires once every 247 files on 87,306 files of real
+Filters 3–5 are why this fires once every 259 files on 87,306 files of real
 source rather than at the 25–75% precision published for regex-and-entropy
 tools. No single one gets there: Luhn alone accepts roughly 1 in 10 random
 numbers of the right length. It is the *compounding of independent

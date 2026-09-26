@@ -15,6 +15,22 @@ synthetic value that passes its own checksum.
 """
 import zipfile, zlib, os, struct
 
+# A fixed timestamp on every entry, so regenerating the fixtures produces
+# byte-identical files. CI runs this script and fails if `git diff` is not
+# empty, which is only a meaningful check if the output is deterministic —
+# zipfile otherwise stamps each entry with the current time.
+FIXED_TIME = (2026, 9, 26, 0, 0, 0)
+
+
+class Zip(zipfile.ZipFile):
+    """A ZipFile whose entries all carry FIXED_TIME."""
+
+    def writestr(self, name, data, *args, **kwargs):
+        info = zipfile.ZipInfo(name, date_time=FIXED_TIME)
+        info.compress_type = self.compression
+        info.external_attr = 0o600 << 16
+        return super().writestr(info, data, *args, **kwargs)
+
 OUT = os.path.join(os.path.dirname(__file__), '..', 'test', 'fixtures')
 os.makedirs(OUT, exist_ok=True)
 
@@ -53,7 +69,7 @@ document_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </w:tbl>
 </w:body></w:document>'''
 
-with zipfile.ZipFile(os.path.join(OUT, 'contract.docx'), 'w', zipfile.ZIP_DEFLATED) as z:
+with Zip(os.path.join(OUT, 'contract.docx'), 'w', zipfile.ZIP_DEFLATED) as z:
     z.writestr('[Content_Types].xml', CT.format(overrides='<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'))
     z.writestr('_rels/.rels', RELS.format(type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument', target='word/document.xml'))
     z.writestr('word/document.xml', document_xml)
@@ -87,7 +103,7 @@ for r, row in enumerate(ROWS, start=1):
     cells = ''.join(f'<c r="{col_name(c)}{r}" t="s"><v>{index[v]}</v></c>' for c, v in enumerate(row))
     sheet_rows.append(f'<row r="{r}">{cells}</row>')
 
-with zipfile.ZipFile(os.path.join(OUT, 'employees.xlsx'), 'w', zipfile.ZIP_DEFLATED) as z:
+with Zip(os.path.join(OUT, 'employees.xlsx'), 'w', zipfile.ZIP_DEFLATED) as z:
     z.writestr('[Content_Types].xml', CT.format(overrides=
         '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
         '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
@@ -107,7 +123,7 @@ slide = '''<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.or
 <a:p><a:r><a:t>Term sheet signed with Meridian; data room opens Monday.</a:t></a:r></a:p>
 <a:p><a:r><a:t>Material non-public information until the 14th.</a:t></a:r></a:p>
 </p:txBody></p:sp></p:spTree></p:cSld></p:sld>'''
-with zipfile.ZipFile(os.path.join(OUT, 'board.pptx'), 'w', zipfile.ZIP_DEFLATED) as z:
+with Zip(os.path.join(OUT, 'board.pptx'), 'w', zipfile.ZIP_DEFLATED) as z:
     z.writestr('[Content_Types].xml', CT.format(overrides='<Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'))
     z.writestr('_rels/.rels', RELS.format(type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument', target='ppt/presentation.xml'))
     z.writestr('ppt/presentation.xml', '<?xml version="1.0"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>')
@@ -121,7 +137,7 @@ odt_content = '''<?xml version="1.0" encoding="UTF-8"?>
 <text:p>Prescribed metformin 500mg. Contact 98765 43216.</text:p>
 <text:p>Aadhaar 234567890124 on file.</text:p>
 </office:text></office:body></office:document-content>'''
-with zipfile.ZipFile(os.path.join(OUT, 'notes.odt'), 'w', zipfile.ZIP_DEFLATED) as z:
+with Zip(os.path.join(OUT, 'notes.odt'), 'w', zipfile.ZIP_DEFLATED) as z:
     z.writestr('mimetype', 'application/vnd.oasis.opendocument.text', zipfile.ZIP_STORED)
     z.writestr('content.xml', odt_content)
 

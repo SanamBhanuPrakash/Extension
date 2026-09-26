@@ -6,7 +6,7 @@
 
 ### Your prompt leaves your machine the instant you press Enter.<br>Chhanni looks at it first.
 
-**`102` detectors · `0.40%` alarm rate on 87,306 real files · reads DOCX/PDF/XLSX · `8` scripts · `0` network permissions**
+**`102` detectors · `0.39%` alarm rate on 87,306 real files · reads DOCX/PDF/XLSX · `8` scripts · `0` network permissions**
 
 <img src="docs/images/panel.png" alt="Chhanni: exposure 88 of 100, an AWS key, a database URL with password, a Stripe key and a payment card found in a pasted .env" width="470">
 
@@ -83,7 +83,7 @@ reason to interrupt anybody.
 ```console
 $ node bench/wild.js /path/to/checkouts
   87,306 files, 407.1 MB of real source
-  353 would raise the panel — one every 247 files, 0.40%
+  337 would raise the panel — one every 259 files, 0.39%
 ```
 
 Getting there meant fixing nine false-positive classes, every one a real line
@@ -91,7 +91,7 @@ from a real repository:
 
 | What fired | On what |
 |---|---|
-| `aadhaar` ×135 | the middle of a UUID, an AWS account number, a coordinate's decimals |
+| `aadhaar` 135 → 46 | the middle of a UUID, an AWS account number, a coordinate's decimals |
 | `payment_card` ×96 | the fractional part of a latitude — `-0.6358599286615808` passes Luhn |
 | `isin` ×21 | the last group of an uppercase UUID |
 | `health_information` | "a **prescribed** notification" in Go, "**symptoms of** bugs" in the Rust book — at *critical* |
