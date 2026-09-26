@@ -45,13 +45,27 @@ export const CONTEXT_RULES = [
     // Longest alternatives first; the bare word is last and gated below.
     pattern: /\b(strictly confidential|company confidential|confidential (?:and proprietary|information)|proprietary and confidential|internal use only|internal only|for internal (?:use|distribution)|do not (?:distribute|forward|share|circulate)|commercially sensitive|restricted[- ]confidential|confidential)\b/gi,
     /**
-     * A bare "confidential" is the most common marking there is, and also a
-     * perfectly ordinary English word. It counts only when it reads as a
-     * marking: written in capitals, or standing at the start of a line the way
-     * a header does. Multi-word phrases are unambiguous and always count.
+     * Two phrases are ordinary English as well as markings, and both needed
+     * the same gate.
+     *
+     * A bare "confidential" is the most common marking there is and also a
+     * normal word. "Internal use only" turned out to be worse: it is how
+     * every library in the world labels a private API, and fifty-three of
+     * them showed up in one scan of real source — Ansible's own config file
+     * says "This is for internal use only" nine times.
+     *
+     * Both count when they read as a *marking* rather than as a sentence:
+     * written in capitals, or standing at the start of a line the way a
+     * header does. The longer phrases — "strictly confidential", "do not
+     * distribute", "proprietary and confidential" — are unambiguous and
+     * always count.
      */
     validate: (m, ctx) => {
-      if (m.toLowerCase() !== 'confidential') return true;
+      const word = m.toLowerCase();
+      const ambiguous = word === 'confidential' || word === 'internal use only'
+        || word === 'internal only' || word === 'for internal use'
+        || word === 'for internal distribution';
+      if (!ambiguous) return true;
       if (m === m.toUpperCase()) return true;
       return /(?:^|\n)[\s*_#>|-]*$/.test(ctx.text.slice(Math.max(0, ctx.index - 24), ctx.index));
     },
@@ -136,9 +150,22 @@ export const CONTEXT_RULES = [
     audience: 'healthcare',
     prefilter: ['diagnos', 'Diagnos', 'patient', 'Patient', 'prescri', 'Prescri', 'medical record',
       'ICD-', 'mg ', 'treatment', 'Treatment', 'symptom'],
-    // `diagnosis` needs to be doing something: "Diagnosis/" is a build
-    // directory in a .gitignore, not a medical record.
-    pattern: /\b(diagnos(?:ed with|is of|is is|is was|tic report)|patient (?:record|history|id|name|chart)|medical (?:record|history|report)|prescri(?:bed|ption for)|ICD-1[01][ -]?[A-Z][0-9]{2}|treatment plan|clinical notes?|lab results?|blood (?:test|report)|symptoms? of)\b/gi,
+    /**
+     * Every phrase here has to be doing medical work, not merely containing a
+     * medical-sounding word. "Diagnosis/" is a build directory in a
+     * .gitignore. Three of these were worse than that, and all three fired at
+     * *critical* severity on ordinary technical prose:
+     *
+     *   "a prescribed notification"      Kubernetes, shared_informer.go
+     *   "symptoms of bugs"               the Rust book
+     *   "Node.js diagnostic report"      the Next.js CLI
+     *
+     * So "prescribed" now needs a dose or a medicine near it, "symptoms of"
+     * needs to be symptoms of a condition rather than of a problem, and
+     * "diagnostic report" is gone: a diagnosis is the medical event, and
+     * "diagnostic" is a word every runtime uses about itself.
+     */
+    pattern: /\b(diagnos(?:ed with|is of|is is|is was)|patient (?:record|history|id|name|chart)|medical (?:record|history|report)|prescription for|prescribed\s+(?=[^.\n]{0,60}\b(?:mg|ml|mcg|iu|tablets?|capsules?|dose|dosage|daily|twice|bd|od|tds|course)\b)|ICD-1[01][ -]?[A-Z][0-9]{2}|treatment plan|clinical notes?|lab results?|blood (?:test|report)|symptoms? of\s+(?=[^.\n]{0,40}\b(?:covid|influenza|flu|diabetes|cancer|depression|anxiety|asthma|infection|disease|disorder|syndrome|illness|condition|the patient)\b))/gi,
     note: 'Health data is a special category under GDPR Article 9, sensitive personal data under the DPDP Act, and PHI under HIPAA. The bar for disclosure is higher than for ordinary personal data.',
   },
   {
@@ -187,6 +214,118 @@ export const CONTEXT_RULES = [
       && !isBenign(m, { placeholder: true })
       && !isCodeIdentifier(m),
     note: 'A password written into a sentence is still a password.',
+  },
+  {
+    id: 'unannounced_transaction',
+    label: 'A deal before it is public',
+    severity: 'critical',
+    confidence: 'likely',
+    advisory: true,
+    audience: 'executive',
+    prefilter: ['acquir', 'Acquir', 'announcement', 'Announcement', 'embargo', 'Embargo',
+      'merger', 'Merger', 'divest', 'Divest', 'takeover', 'Takeover'],
+    /**
+     * The example that started this: "Our company is acquiring Acme for $46M
+     * and the announcement is scheduled for October 12."
+     *
+     * Not one credential, not one identifier, not one name of a person — and
+     * the single most damaging sentence in the whole document. A pattern
+     * engine that only asks "is this a secret-shaped string" cannot see it.
+     * What it can see is a transaction verb, a named party, a sum of money,
+     * and a date that has not happened yet.
+     */
+    pattern: /\b((?:acquir(?:e|es|ed|ing)|merg(?:e|es|ed|ing)\s+with|purchas(?:e|es|ed|ing)|buy(?:s|ing)?|divest(?:s|ed|ing)?|tak(?:e|es|ing)\s+over)\s+(?:[A-Z][\w&'.-]*(?:\s+[A-Z][\w&'.-]*){0,3})|announcement\s+is\s+(?:scheduled|planned|set)\s+for|(?:before|ahead of|prior to)\s+the\s+announcement|embargoed until|under embargo|signing\s+(?:is|happens)\s+on)\b/g,
+    /**
+     * A transaction verb with a capitalised object is common English ("buy
+     * Redis", "acquire GitHub" in a news article). It counts when there is
+     * money attached, or a date the reader is being told not to jump.
+     */
+    validate: (m, ctx) => {
+      const window = ctx.text.slice(Math.max(0, ctx.index - 160), ctx.index + 200);
+      // Coordinated vulnerability disclosure borrows the word "embargo", and
+      // axios's SECURITY.md is not a merger. A security context rules it out.
+      if (/embargo/i.test(m)) {
+        return !/\b(?:vulnerabilit|advisor|CVE-|disclosure|security|patch|researcher|report)/i.test(window);
+      }
+      if (/announcement|signing/i.test(m)) return true;
+      return MONEY.test(window)
+        || /\b(?:confidential|not yet public|unannounced|do not (?:share|forward)|under NDA)\b/i.test(window);
+    },
+    note: 'A transaction that has not been announced is inside information for everyone who knows about it. Disclosure to a third-party service is the risk the rules exist for.',
+  },
+  {
+    id: 'negotiation_position',
+    label: 'A negotiating position',
+    severity: 'high',
+    confidence: 'likely',
+    advisory: true,
+    audience: 'executive',
+    prefilter: ['walk away', 'walk-away', 'BATNA', 'best and final', 'reservation price',
+      'floor price', 'our floor', 'counteroffer', 'counter-offer', 'as low as', 'bottom line is'],
+    /**
+     * The one thing in a negotiation whose value is entirely in the other side
+     * not having it. Pasting it into a chat box is not a compliance problem;
+     * it is a commercial one, which is why no DLP product looks for it.
+     */
+    pattern: /\b(walk[- ]away (?:price|point|number)|\bBATNA\b|best and final (?:offer|price)|reservation price|(?:our|the) floor (?:is|price)|price floor of|we (?:can|could) go as low as|we(?:'| a)?re (?:prepared|willing) to (?:accept|go to|pay)|internal (?:target|ceiling|budget) (?:is|of)|counter[- ]?offer of)\b/gi,
+    note: 'This is a position, not a fact. Its value depends on the other side not having it.',
+  },
+  {
+    id: 'trade_secret',
+    label: 'Proprietary method or unfiled invention',
+    severity: 'high',
+    confidence: 'possible',
+    advisory: true,
+    audience: 'everyone',
+    prefilter: ['trade secret', 'Trade Secret', 'proprietary', 'Proprietary', 'invention disclosure',
+      'provisional patent', 'patent application', 'not patented', 'unpatented'],
+    pattern: /\b(trade secrets?|invention disclosure|provisional patent|patent application (?:number|draft|for)|(?:before|prior to) filing|unpatented|not (?:yet )?patented|proprietary (?:algorithm|model|method|process|formula|weights|dataset))\b/gi,
+    note: 'Trade-secret protection depends on reasonable steps to keep it secret. Disclosure to a third party without an agreement in place can end that protection outright — unlike a patent, there is nothing to fall back on.',
+  },
+  {
+    id: 'workforce_action',
+    label: 'Unannounced workforce decision',
+    severity: 'high',
+    confidence: 'likely',
+    advisory: true,
+    audience: 'hr',
+    prefilter: ['reduction in force', 'redundanc', 'Redundanc', 'layoff', 'Layoff', 'severance',
+      'performance improvement plan', 'termination list', 'let go'],
+    pattern: /\b(reduction in force|\bRIF(?:ed|s)?\b|layoffs?\s+(?:planned|scheduled|list|of \d+)|redundanc(?:y|ies)\s+(?:consultation|list|process)|severance (?:package|terms|offer)|performance improvement plan|termination list|exit list|being (?:let go|managed out))\b/gi,
+    note: 'A decision about a named person before they have been told. In most jurisdictions the consultation process has rules about who learns first.',
+  },
+  {
+    id: 'legal_hold',
+    label: 'Live or threatened litigation',
+    severity: 'high',
+    confidence: 'likely',
+    advisory: true,
+    audience: 'legal',
+    prefilter: ['litigation hold', 'legal hold', 'preservation notice', 'cease and desist',
+      'subpoena', 'Subpoena', 'without prejudice', 'settlement agreement'],
+    pattern: /\b(litigation hold|legal hold|preservation notice|cease and desist|subpoena(?:ed)?|without prejudice|settlement (?:agreement|discussions?|negotiations?)|statement of claim|letter before action|arbitration (?:notice|demand))\b/gi,
+    /**
+     * "Legal hold" is also the name of an S3 Object Lock setting, which is why
+     * this fired twenty times in the AWS Terraform provider and nowhere else
+     * in 87,000 files. An API flag is not a dispute.
+     */
+    validate: (m, ctx) => !/legal hold/i.test(m)
+      || !near(ctx.text, ctx.index, 120, /\b(?:s3|object[_ ]lock|bucket|retention[_ ]mode|governance mode|compliance mode|version_?id)\b/i),
+    note: 'Material connected to a live or threatened dispute. A copy in a third-party service is a copy that can be asked for in discovery.',
+  },
+  {
+    id: 'internal_pricing',
+    label: 'Internal cost or margin',
+    severity: 'medium',
+    confidence: 'possible',
+    advisory: true,
+    audience: 'executive',
+    prefilter: ['rate card', 'Rate Card', 'gross margin', 'cost of goods', 'our cost', 'unit cost',
+      'discount floor', 'internal pricing', 'landed cost', 'markup'],
+    pattern: /\b(rate card|gross margin(?:s)? (?:of|on|is|are)|cost of goods(?: sold)?|\bCOGS\b|(?:our|unit|landed|wholesale) cost (?:is|of|per)|discount (?:floor|ceiling|authority)|internal pricing|markup (?:of|is))\b/gi,
+    /** A pricing word without a number is a topic; with one it is a figure. */
+    validate: (m, ctx) => near(ctx.text, ctx.index, 160, MONEY) || /%/.test(ctx.text.slice(ctx.index, ctx.index + 80)),
+    note: 'What something costs you, rather than what you charge for it. A customer, a supplier or a competitor reading this changes the next negotiation.',
   },
   {
     id: 'customer_list',

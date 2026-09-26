@@ -55,6 +55,190 @@ const vendor = (id, label, pattern, prefilter, severity = 'critical', extra = {}
   id, label, severity, confidence: 'certain', pattern, prefilter, ...extra,
 });
 
+/**
+ * ISO 3166-1 alpha-2, plus the X-codes ISIN reserves for issues that are not
+ * tied to one country: XS for Euroclear and Clearstream, XA/XB/XC/XD for CUSIP
+ * International, EU and QM/QS for other supranational ranges.
+ */
+/**
+ * True when a run occupies its own line, or sits on the right of a single
+ * assignment. Quotes, commas, semicolons and trailing backslashes are allowed
+ * around it, because that is how values appear in real files.
+ */
+function standsAsValue(text, index, length) {
+  const lineStart = text.lastIndexOf('\n', index) + 1;
+  let lineEnd = text.indexOf('\n', index + length);
+  if (lineEnd < 0) lineEnd = text.length;
+  const head = text.slice(lineStart, index);
+  const tail = text.slice(index + length, lineEnd);
+
+  // Nothing but decoration after it, on either reading below.
+  if (!/^["'`,;\\\s)\]}]*$/.test(tail)) return false;
+  // Alone on its line.
+  if (/^[\s"'`>*#|-]*$/.test(head)) return true;
+
+  // If a quote closes it, a quote has to open it.
+  //
+  // Django's signing documentation is full of 'My string:<signature>' — one
+  // quoted string containing a colon, which reads as key:value and is not
+  // one. The value's own opening quote is the difference: "key": "<value>"
+  // has one, 'My string:<value>' does not.
+  const quote = /^["'`]/.exec(tail);
+  if (quote && !head.endsWith(quote[0])) return false;
+
+  // The right-hand side of one assignment. `==`, `!=`, `<=`, `>=` and `=>`
+  // cannot match: each puts a character before the separator that a key
+  // cannot end with.
+  return /(?:^|[\s,{(\[])["'`]?[\w.$-]{1,64}["'`]?\s*[=:]\s*["'`]?\s*$/.test(head);
+}
+
+/**
+ * True when base64 decodes to something that was already something else: a
+ * known file format, or text.
+ *
+ * The UTF-8 test is the strong one. A sequence of random bytes is valid UTF-8
+ * with vanishing probability past a dozen bytes, so "decodes to valid UTF-8
+ * made of printable code points" is a reliable way to say "this is an
+ * encoding of something, not key material" — without knowing what either was.
+ */
+const B64_MAGIC = /^(?:R0lGOD|iVBORw0KGgo|\/9j\/|JVBERi0|UEsDB|H4sI|AAABAA|PHN2Zy|PD94bWw|Qk0|SUkq|TU0A|f0VMR|TVqQ|Q1JFQVR)/;
+
+function encodesKnownContent(value) {
+  if (B64_MAGIC.test(value)) return true;
+  const s = value.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+  if (s.length < 20 || /[^A-Za-z0-9+/]/.test(s)) return false;
+
+  const bytes = [];
+  let bits = 0;
+  let acc = 0;
+  for (let i = 0; i < s.length; i++) {
+    const v = B64_INDEX[s.charCodeAt(i)];
+    if (v < 0) return false;
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits < 8) continue;
+    bits -= 8;
+    bytes.push((acc >> bits) & 0xff);
+  }
+  if (bytes.length < 15) return false;
+
+  // Walk it as UTF-8. Anything that is not a printable code point, or any
+  // malformed sequence, and this is not text.
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i];
+    if (b < 0x80) {
+      if (b < 0x20 && b !== 9 && b !== 10 && b !== 13) return false;
+      continue;
+    }
+    let extra;
+    if (b >= 0xc2 && b <= 0xdf) extra = 1;
+    else if (b >= 0xe0 && b <= 0xef) extra = 2;
+    else if (b >= 0xf0 && b <= 0xf4) extra = 3;
+    else return false;
+    // The last few bytes may be a truncated character; stop rather than fail.
+    if (i + extra >= bytes.length) break;
+    for (let k = 1; k <= extra; k++) {
+      if ((bytes[i + k] & 0xc0) !== 0x80) return false;
+    }
+    i += extra;
+  }
+  return true;
+}
+
+/** True when an offset falls between a PEM BEGIN line and its END line. */
+function insidePemBlock(text, index) {
+  const begin = text.lastIndexOf('-----BEGIN', index);
+  if (begin < 0) return false;
+  const end = text.lastIndexOf('-----END', index);
+  return end < begin;
+}
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const B64_INDEX = new Int8Array(128).fill(-1);
+for (let i = 0; i < B64.length; i++) B64_INDEX[B64.charCodeAt(i)] = i;
+
+/**
+ * True when a string is base64 of something a person could read.
+ *
+ * A JWT's header decodes to `{"alg":"HS256","typ":"JWT"}`; an encoded config
+ * decodes to YAML. Thirty random bytes decode to thirty random bytes, which
+ * are not printable. This is the cheapest way to tell an encoding from a key
+ * without knowing what either is supposed to be.
+ */
+function decodesToText(value) {
+  const s = value.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+  if (s.length < 16 || /[^A-Za-z0-9+/]/.test(s)) return false;
+  let printable = 0;
+  let total = 0;
+  let bits = 0;
+  let acc = 0;
+  for (let i = 0; i < s.length; i++) {
+    const v = B64_INDEX[s.charCodeAt(i)];
+    if (v < 0) return false;
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits < 8) continue;
+    bits -= 8;
+    const byte = (acc >> bits) & 0xff;
+    total++;
+    if ((byte >= 0x20 && byte < 0x7f) || byte === 0x09 || byte === 0x0a || byte === 0x0d) printable++;
+  }
+  return total >= 12 && printable / total >= 0.9;
+}
+
+/**
+ * Runs of four or more lowercase letters, per character.
+ *
+ * The statistic that separates a random token from a name built out of words,
+ * without needing a dictionary. React's benchmark fixture lists component
+ * names one per line — FluxContainer_AdsPEBIGAdAccountSelectorContainer_8 —
+ * which has enough case changes, digits and underscores to look random by
+ * every other measure here. What it also has is four English words in it.
+ *
+ * Normalised by length, because a longer random string gets more runs by
+ * chance: a uniform base62 string of any length sits near 0.010, and the
+ * React names sit above 0.08.
+ */
+function wordiness(s) {
+  let runs = 0;
+  let run = 0;
+  for (let i = 0; i <= s.length; i++) {
+    const c = i < s.length ? s.charCodeAt(i) : 0;
+    if (c >= 97 && c <= 122) { run++; continue; }
+    if (run >= 4) runs++;
+    run = 0;
+  }
+  return runs / Math.max(1, s.length);
+}
+
+/**
+ * How often a string changes character class, per character.
+ *
+ * The statistic that separates a random token from a long identifier without
+ * needing a dictionary. Base62 drawn uniformly changes class roughly 0.62
+ * times per character; `getUserProfileByOrganisationId` changes it about 0.1
+ * times; a hex digest never changes it at all.
+ */
+function classTransitions(s) {
+  const cls = (c) => (c >= 97 && c <= 122 ? 1 : c >= 65 && c <= 90 ? 2 : c >= 48 && c <= 57 ? 3 : 4);
+  let changes = 0;
+  for (let i = 1; i < s.length; i++) {
+    if (cls(s.charCodeAt(i)) !== cls(s.charCodeAt(i - 1))) changes++;
+  }
+  return changes / Math.max(1, s.length - 1);
+}
+
+const ISIN_PREFIX = new Set(('AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ '
+  + 'BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ '
+  + 'DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT '
+  + 'GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY '
+  + 'KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX '
+  + 'MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS '
+  + 'RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN '
+  + 'TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW '
+  + 'XS XA XB XC XD XF XK EU QM QS').split(/\s+/));
+
+
 export const RULES = [
   // ═══════════════════════════════════════════════════════ cloud providers
   {
@@ -306,6 +490,102 @@ export const RULES = [
     group: 1,
     validate: (m) => !isBenign(m, { placeholder: true }) && !isCodeIdentifier(m) && looksRandom(m, 3.2),
   },
+  {
+    id: 'unlabelled_secret',
+    label: 'Unlabelled random value',
+    severity: 'medium',
+    confidence: 'possible',
+    needs: { alnumRun: 32 },
+    /**
+     * The gap every keyword-anchored scanner has.
+     *
+     * Every other detector here fires on a prefix nobody else uses (AKIA,
+     * ghp_, xoxb-) or on a credential word within reach. A token in a format
+     * that did not exist when this shipped, pasted on its own line with
+     * nothing around it to say what it is, matches none of them — and a
+     * secret pasted without context is not less of a secret.
+     *
+     * The problem is that most long random-looking strings in real text are
+     * supposed to be there: git SHAs, UUIDs, content hashes, digests, base64
+     * images, minified code, nonces. So the bar is set by what a *secret*
+     * looks like and a hash does not:
+     *
+     *   - all three character classes present, which excludes every hex
+     *     digest, every git SHA and most base32
+     *   - Shannon entropy at least 4.2, which excludes prose and identifiers
+     *   - class transitions at least 0.3 per character. A random base62
+     *     string changes class about 0.62 times a character; a long
+     *     concatenated identifier almost never does
+     *   - digits somewhere between a twelfth and three quarters of it
+     *   - standing alone: not part of a path, a URL, a dotted name or a
+     *     longer token
+     *
+     * It is `medium`, never `critical`. The honest statement is "this looks
+     * like a key and nothing here says what it is", and that is a question
+     * for the person, not a verdict.
+     */
+    //
+    // `=` appears only as trailing padding, never inside the run. Allowing it
+    // anywhere made `FOO_UNKNOWN_V2=<token>` match as one 55-character string
+    // whose statistics are the key's diluted by the variable name — so the
+    // token was reported when the name was short and missed when it was long.
+    pattern: /(?<![A-Za-z0-9_\-/+.])([A-Za-z0-9_\-+/]{32,128}={0,2})(?![A-Za-z0-9_\-/+.])/g,
+    group: 1,
+    validate: (m, ctx) => {
+      if (isBenign(m, { placeholder: true }) || isCodeIdentifier(m)) return false;
+      // Hex of any length, not only digest lengths: a 48-character hex run is
+      // a hash of something, not a credential.
+      if (/^[0-9a-f]+$/i.test(m)) return false;
+      // Subresource integrity carries its algorithm inside the token, so the
+      // surrounding-words guard below never sees it.
+      if (/^(?:sha(?:1|224|256|384|512)|md5)-/i.test(m)) return false;
+      // An SSH *public* key is published on purpose. The wire format starts
+      // with the algorithm name, base64-encoded, which is why they all begin
+      // the same way.
+      if (/^(?:AAAAB3NzaC1|AAAAC3NzaC1|AAAAE2VjZHNh|AAAAG25pc3Rw)/.test(m)) return false;
+      // Mixing the two base64 alphabets means it is neither. It is a path:
+      // /home/some_user/virt-images/packer-windows-2012-R2-standard.
+      if (/[+/]/.test(m) && /[-_]/.test(m)) return false;
+      // Hyphen-grouped identifiers: LVM uuids, licence keys, serial numbers.
+      if (/^[A-Za-z0-9]{3,8}(?:-[A-Za-z0-9]{3,8}){3,}$/.test(m)) return false;
+
+      if (!/[a-z]/.test(m) || !/[A-Z]/.test(m) || !/[0-9]/.test(m)) return false;
+      // Only an upper bound on digits. A floor looked reasonable and was not:
+      // a real forty-character base62 token carries two digits about one time
+      // in fifty, and discarding those to catch nothing is a bad trade.
+      if ((m.match(/[0-9]/g) || []).length / m.length > 0.75) return false;
+      if (entropy(m) < 4.2) return false;
+      if (classTransitions(m) < 0.3) return false;
+      if (wordiness(m) >= 0.04) return false;
+      // Base64 of a file or of readable text is an encoding, not a key.
+      if (encodesKnownContent(m)) return false;
+
+      // A value that already sits next to a credential word belongs to
+      // high_entropy_assignment, which says something more specific about it.
+      if (nearSecretWord(ctx.text, ctx.index, 48)) return false;
+
+      const before = ctx.text.slice(Math.max(0, ctx.index - 48), ctx.index);
+      if (/https?:\/\/\S*$/.test(before)) return false;
+      // `h1:` is Go's module checksum prefix. Eleven go.sum files held two
+      // thirds of everything this rule reported across 87,000 source files,
+      // which is what a lockfile is: a page of content hashes.
+      if (/(?:sha|md5|hash|digest|checksum|commit|revision|etag|nonce|integrity|sri|uuid|guid|fingerprint|\bh1)\W{0,4}$/i.test(before)) return false;
+      if (/\b(?:ssh-(?:rsa|dss|ed25519)|ecdsa-sha2\S*)\s*$/i.test(before)) return false;
+      // The body of a PEM block is sixty-four base64 characters a line, and
+      // private_key_block has already reported the whole thing. Saying it
+      // again, once per line, is noise about a secret already named.
+      if (insidePemBlock(ctx.text, ctx.index)) return false;
+
+      // Finally: it has to have been *presented* as a value.
+      //
+      // Without this the rule fired 5,064 times on 87,000 real source files —
+      // every embedded blob, every fixture, every argument to a function. A
+      // secret someone pastes stands on its own line or sits on the right of
+      // an assignment. A blob buried in an expression is somebody's data.
+      return standsAsValue(ctx.text, ctx.index, m.length);
+    },
+    note: 'This looks like a key, and nothing around it says what it is. If it is one, it is still one.',
+  },
 
   // ═══════════════════════════════════════════════════════════ India: identity
   {
@@ -315,7 +595,35 @@ export const RULES = [
     severity: 'critical',
     confidence: 'certain',
     pattern: /\b([2-9]\d{3}[ -]?\d{4}[ -]?\d{4})\b/g,
-    validate: (m) => aadhaar(m),
+    /**
+     * Verhoeff accepts about one random twelve-digit number in ten, and this
+     * rule fires at critical severity, so everything it wrongly reports stops
+     * somebody mid-sentence. Scanning 87,000 real source files found 135, and
+     * all of them fell into four shapes:
+     *
+     *   11111111-2222-3333-4444-555555555555   the middle of a UUID
+     *   276.987855073372                        a coordinate's decimals
+     *   arn:aws:iam::444455556666:role/example  an AWS account id, also 12
+     *   202202081414.00                         a timestamp
+     *
+     * Four guards, in the order they are cheapest to check. The distinct-digit
+     * floor is the one that does most of the work: a test fixture reaches for
+     * 4444-5555-6666, and a real Aadhaar drawn from a random twelve-digit
+     * space has four or fewer distinct digits about once in ten thousand.
+     */
+    validate: (m, ctx) => {
+      const digits = m.replace(/[^0-9]/g, '');
+      if (new Set(digits).size < 5) return false;
+
+      const before = ctx.text.slice(Math.max(0, ctx.index - 64), ctx.index);
+      const after = ctx.text.slice(ctx.index + m.length, ctx.index + m.length + 8);
+      // Inside a UUID, or on either side of a decimal point.
+      if (/[0-9a-fA-F]-$/.test(before) || /^-[0-9a-fA-F]/.test(after)) return false;
+      if (/[.]$/.test(before) || /^\.\d/.test(after)) return false;
+      // An AWS account number is exactly twelve digits too, and says so.
+      if (/\barn:|\baws\b|account[ _-]?(?:id|number)/i.test(before)) return false;
+      return aadhaar(m);
+    },
     note: 'Sensitive personal data under the DPDP Act, 2023.',
   },
   {
@@ -403,10 +711,25 @@ export const RULES = [
     // card is bounded; a slice of a longer digit stream is not one.
     validate: (m, ctx) => {
       if (!luhn(m) || cardIssuer(m) === null) return false;
-      const before = ctx.text.slice(Math.max(0, ctx.index - 3), ctx.index);
-      const after = ctx.text.slice(ctx.index + m.length, ctx.index + m.length + 3);
+      //
+      // The guard also has to treat a decimal point as a digit. Scanning
+      // Django's GIS fixtures found ninety-six "cards" that were the
+      // fractional part of a latitude: -0.6358599286615808 contains sixteen
+      // digits that pass Luhn and start with 6, which is a Discover range.
+      // \b does not help, because '.' is not a word character.
+      // The guard also has to treat a decimal point as part of a number —
+      // but only when it *is* one. Django's GIS fixtures produced ninety-six
+      // "cards" that were the fractional part of a latitude
+      // (-0.6358599286615808 holds sixteen digits that pass Luhn and start in
+      // a Discover range), and \b does not help because '.' is not a word
+      // character. A full stop at the end of a sentence is not a decimal
+      // point, so the digit on the far side is what decides.
+      const before = ctx.text.slice(Math.max(0, ctx.index - 4), ctx.index);
+      const after = ctx.text.slice(ctx.index + m.length, ctx.index + m.length + 4);
       if (/\d[ -]?$/.test(before)) return false;
       if (/^[ -]?\d/.test(after)) return false;
+      if (/\d\.$/.test(before)) return false;
+      if (/^\.\d/.test(after)) return false;
       return true;
     },
     enrich: (m) => ({ note: `${cardIssuer(m)}, passes Luhn and a live issuer range.` }),
@@ -500,7 +823,23 @@ export const RULES = [
     severity: 'low',
     confidence: 'certain',
     pattern: /\b([A-Z]{2}[A-Z0-9]{9}[0-9])\b/g,
-    validate: (m) => isin(m),
+    /**
+     * The check digit alone is not enough: any twelve-character uppercase
+     * alphanumeric run has a one-in-ten chance of passing it, and the last
+     * group of an uppercase UUID is exactly twelve characters. Every one of
+     * the twenty-one found in real source was of the form
+     * {4724A46A-3F20-5AAA-8180-CBD31D08E478} — a Sitecore item id.
+     *
+     * An ISIN begins with an ISO 3166-1 alpha-2 country code (or one of the
+     * reserved X-codes for supranational issues). "CB" and "DA" are not
+     * countries, which settles both cases without touching a real ISIN.
+     */
+    validate: (m, ctx) => {
+      if (!ISIN_PREFIX.has(m.slice(0, 2))) return false;
+      const before = ctx.text.slice(Math.max(0, ctx.index - 2), ctx.index);
+      if (/[0-9A-Fa-f]-$/.test(before)) return false;
+      return isin(m);
+    },
   },
   {
     id: 'imei',
@@ -575,7 +914,7 @@ export const CATEGORIES = [
   { id: 'payments', label: 'Payments', ids: ['stripe_live_key', 'stripe_test_key', 'square_token', 'razorpay_key', 'paypal_token'] },
   { id: 'comms', label: 'Communications', ids: ['slack_token', 'slack_webhook', 'discord_bot_token', 'telegram_bot_token', 'sendgrid_key', 'twilio_key', 'mailgun_key', 'mailchimp_key'] },
   { id: 'platform', label: 'Data & platform', ids: ['shopify_token', 'databricks_token', 'supabase_key', 'planetscale_token', 'doppler_token', 'notion_token', 'figma_token', 'linear_key', 'atlassian_token', 'dropbox_token', 'newrelic_key', 'grafana_token', 'sentry_token', 'okta_token'] },
-  { id: 'generic', label: 'Generic secrets', ids: ['private_key_block', 'db_connection_string', 'jwt', 'bearer_header', 'high_entropy_assignment'] },
+  { id: 'generic', label: 'Generic secrets', ids: ['private_key_block', 'db_connection_string', 'jwt', 'bearer_header', 'high_entropy_assignment', 'unlabelled_secret'] },
   { id: 'india', label: 'India — identity', ids: ['aadhaar', 'pan_india', 'gstin', 'ifsc', 'upi_vpa', 'indian_passport', 'voter_id', 'indian_dl', 'phone_india'] },
   CONTEXT_CATEGORY,
   { id: 'prose', label: 'Names & addresses in prose', ids: ['person_name', 'postal_address'] },
@@ -608,6 +947,7 @@ export const PROOFS = {
   jwt: 'base64-decodes to a JOSE header; the payload is read for alg:none, expiry and claims',
   db_connection_string: 'credentials must be present in the URL and must not be a placeholder',
   high_entropy_assignment: 'Shannon entropy, with documentation placeholders and benign shapes excluded',
+  unlabelled_secret: 'Shannon entropy ≥ 4.2, all three character classes, ≥ 0.3 class transitions per character, and not a digest, UUID, encoding or PEM body',
   payment_card: 'Luhn mod-10, plus issuer-range brand identification',
   aadhaar: 'Verhoeff check digit, plus the reserved first-digit rules',
   gstin: 'mod-36 check character and a valid state code',

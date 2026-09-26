@@ -64,6 +64,27 @@ export const REGIME_MAP = {
   legal_privilege: [{ regime: 'Legal privilege', ref: 'common law', what: 'disclosure to a third party can waive it' }],
   compensation_data: [G('Art. 4(1)', 'personal data about identifiable employees'), D('S. 2(t)', 'personal data')],
   deal_material: [{ regime: 'Contract', ref: 'NDA / confidentiality undertaking', what: 'typically restricted to named recipients' }],
+  unannounced_transaction: [
+    { regime: 'SEC', ref: 'Reg FD / Rule 10b5-1', what: 'selective disclosure of material non-public information' },
+    { regime: 'SEBI', ref: 'PIT Regulations 2015, Reg. 3', what: 'unpublished price sensitive information' },
+    { regime: 'UK MAR', ref: 'Art. 10', what: 'unlawful disclosure of inside information' },
+    { regime: 'Contract', ref: 'NDA / confidentiality undertaking', what: 'deal terms are normally restricted to named recipients' },
+  ],
+  negotiation_position: [{ regime: 'Contract', ref: 'NDA / confidentiality undertaking', what: 'commercial terms exchanged in confidence' }],
+  trade_secret: [
+    { regime: 'EU Trade Secrets Directive', ref: '2016/943 Art. 2', what: 'protection requires reasonable steps to keep it secret' },
+    { regime: 'US DTSA', ref: '18 U.S.C. 1839(3)', what: 'protection requires reasonable measures to keep it secret' },
+  ],
+  workforce_action: [
+    G('Art. 4(1)', 'personal data about identifiable employees'),
+    D('S. 2(t)', 'personal data'),
+    { regime: 'Employment law', ref: 'consultation duties vary by jurisdiction', what: 'who learns of a decision first is often regulated' },
+  ],
+  legal_hold: [
+    { regime: 'Legal privilege', ref: 'common law', what: 'disclosure to a third party can waive it' },
+    { regime: 'Discovery / disclosure', ref: 'e.g. FRCP 26, CPR 31', what: 'a copy held by a third party can be within scope' },
+  ],
+  internal_pricing: [{ regime: 'Contract', ref: 'NDA / confidentiality undertaking', what: 'cost and margin data exchanged in confidence' }],
 
   prompt_injection: [{ regime: 'OWASP GenAI', ref: 'LLM01 Prompt Injection', what: 'untrusted content carrying instructions to the model' }],
 
