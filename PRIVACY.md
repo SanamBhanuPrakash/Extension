@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Chhanni** — last updated 25 September 2026.
+**Chhanni** — last updated 26 September 2026.
 
 ## The short version
 
@@ -10,10 +10,20 @@ paste or attach ever leaves your browser.
 
 ## What it does
 
-Chhanni inspects text you paste or type into an AI chat page, and text-like
-files you attach there, and tells you if it contains credentials, personal data
-or confidential material. All of this happens inside your browser, on your
-device, while you are looking at it.
+Chhanni inspects text you paste or type into an AI chat page, and the files you
+attach there, and tells you if it contains credentials, personal data or
+confidential material. All of this happens inside your browser, on your device,
+while you are looking at it.
+
+Attachments are read in the page. A Word, Excel, PowerPoint or OpenDocument
+file is decompressed and its text extracted; a PDF's text is extracted; a
+photograph's EXIF metadata is read. None of it is uploaded anywhere, and no
+library is downloaded to do it — the decompression is a browser feature
+(`DecompressionStream`) and everything else is code in the extension package.
+
+There is no OCR. Text that exists only as pixels — a screenshot, a scanned
+contract — is not read, and Chhanni says so by name rather than staying
+silent.
 
 ## What it stores
 
@@ -27,9 +37,25 @@ Two things, both in your own browser profile:
 2. **A local history of what was caught** (`chrome.storage.local`) — up to 120
    recent detections. Each entry holds the detector's name, the severity, the
    site, the time, a **masked** preview (for example `AKI************PLE`), and
-   a one-way hash. **The actual secret is never stored.** This history is
+   a fingerprint. **The actual secret is never stored.** This history is
    deliberately kept out of browser sync, and you can erase it at any time from
    the toolbar popup with **Clear history**.
+
+3. **A random value used to compute those fingerprints**
+   (`chrome.storage.local`), generated once when the extension first runs. A
+   fingerprint is SHA-256 of that value and the detected text, truncated. It
+   exists so the popup can say "you have pasted the same key six times" without
+   ever holding the key. Keeping the random value local and out of sync means
+   fingerprints cannot be compared between your devices, or with anybody
+   else's.
+
+   To be precise rather than reassuring: a fingerprint is not a secret. For a
+   short and predictable value, the masked preview — which deliberately keeps
+   the first and last few characters, so you can recognise your own key — plus
+   the site and the time already narrow things considerably. This store is
+   designed so that a leak of it is not a leak of your credentials. It is not
+   designed to survive somebody who already has your browser profile, and
+   neither is anything else in that profile.
 
 ## What it does not do
 
@@ -50,9 +76,13 @@ Two things, both in your own browser profile:
 | Permission | Why |
 |---|---|
 | `storage` | To remember your settings and your local detection history. |
+| `scripting` | So that, if you press **"Watch this site too"** in the popup, Chhanni can start checking a site it does not ship with — your company's own AI tool, for instance. It is used for nothing else, and it grants no network access. |
 | Host access to listed AI chat sites | To read the text in the composer *on that page only*, so it can be checked before you send it. The text is never transmitted. |
+| Optional host access to a site you add | Requested only when you press that button, for the one site you are on. You can revoke it from the same popup, or from your browser's extension settings. |
 
-There are no other permissions.
+There are no other permissions. In particular there is no `webRequest`, no
+`declarativeNetRequest`, no `cookies`, no `history` and no `downloads`, and an
+automated test fails the build if any of them is ever added.
 
 ## Your data, your control
 

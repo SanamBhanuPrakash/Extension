@@ -125,10 +125,25 @@ Detection is advisory, because a document can legitimately *discuss* prompt
 injection — this one does. The finding says what was found and the person
 decides.
 
-Scanning 10,472 real files taught the limits here: an early version flagged a
+Scanning 87,306 real files taught the limits here. An early version flagged a
 **.gitignore** explaining "ignore rules", a threat model discussing "leak
-secrets", and API docs saying "send the token". Imperatives now require a
-deictic target and exfiltration requires a destination.
+secrets", and API docs saying "send the token". A later one flagged Django's
+lazy object for "pretending to be" the class it wraps, and an Ansible log line
+for the words "no system message:".
+
+Imperatives now require a deictic target; exfiltration requires a real
+destination (a URL, a host or an email address, not "the server"); "pretend to
+be" requires something that removes a restriction; and a directive keyword has
+to sit at the start of a line the way a header does.
+
+Two of the fixes were internationalisation bugs, and they are the ones worth
+remembering. U+200B is not a smuggling character in Khmer, Thai, Lao, Myanmar
+or Tibetan — it is the word separator, and Django's Khmer translation carries
+fifty in one file. Bidirectional isolates are not an attack in Central Kurdish;
+they are how a Latin placeholder sits inside an Arabic-script sentence. Only
+the two *overrides*, U+202D and U+202E, force a reading order against the
+characters' own direction, which is Trojan Source (CVE-2021-42574). Neither was
+findable by reasoning about the code.
 
 ### T9 — Organisation policy becomes a telemetry pipe
 
@@ -149,19 +164,31 @@ listed so nobody mistakes the tool for more than it is.
 
 | Not covered | Why |
 |---|---|
-| **Images, PDFs and office documents** | Text attachments are read and can be replaced with redacted copies. Binary ones are not read at all — and now say so, rather than letting silence imply they were checked. A screenshot of a dashboard is a real and unhandled leak. |
-| **Sites with no granted permission** | Composer detection is now by shape rather than by a hostname list, so a product that ships after this version still works — but only where the user has granted access. Optional host permissions exist for that; the extension cannot widen its own reach. |
-| **Semantic leaks** | Describing unreleased pricing in careful prose is a leak. Nothing pattern-based can see it. |
-| **Novel credential formats** | These fall through to the entropy rule, which needs a credential-ish word nearby. A bare unknown-format key with no context is missed. |
+| **Text that exists only as pixels** | DOCX, XLSX, PPTX, ODT, PDF and RTF are read now, and an image gives up its EXIF. What no amount of parsing reaches is a screenshot's content: there is no OCR, and there will not be, because Tesseract's WASM build would either triple the package or require a network fetch. The panel names the file and says so. |
+| **Closed shadow roots** | Open ones are handled through `composedPath()` and a capped sweep for response text. A closed root is unreachable by any API an isolated world has. |
+| **Sites with no granted permission** | Composer detection is by shape rather than by hostname, so a product that ships after this version still works — but only where the user has granted access. The popup now states which of three states the current tab is in and offers to extend coverage to a site the person adds; the extension still cannot widen its own reach unasked. |
 | **A determined user** | "Send as-is" exists on purpose. This is a guardrail, not a DLP control, and it should not be sold as one. |
 | **Other extensions** | An extension with broader permissions can read the page and the composer. Chhanni cannot defend that boundary. |
 | **The provider itself** | Once redacted text is sent, what the provider does with it is their policy, not this tool's. |
+
+Two entries left this table in this version. **Semantic leaks** — "we are
+acquiring Acme for $46M and the announcement is on the 12th" — are now six
+advisory signals covering unannounced transactions, negotiating positions,
+trade secrets before filing, workforce decisions, live litigation and internal
+cost. They are advisory because there is nothing in them to replace with a
+placeholder. **Novel credential formats** are now `unlabelled_secret`, which
+needs no keyword at all. Neither is *solved*; both are better than silent, and
+[LIMITATIONS.md](LIMITATIONS.md) says how much better.
 
 ## Residual risk, stated plainly
 
 Chhanni reduces the probability that a credential reaches a chat box. It does
 not reduce it to zero, and it does not make an organisation compliant with
 anything. The honest claim is narrower than the category usually sells: it
-catches the common formats, it proves nine of them, it costs nothing to run,
-and it is small enough that a sceptical reviewer can verify the no-network
+catches the common formats, it proves twenty-eight of them arithmetically, it
+reads the attachment rather than guessing from its name, it costs nothing to
+run, and it is small enough that a sceptical reviewer can verify the no-network
 promise themselves in a few minutes.
+
+Everything it does not do is in [LIMITATIONS.md](LIMITATIONS.md), in fifteen
+sections, because a boundary nobody states is a boundary everybody crosses.

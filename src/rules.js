@@ -617,8 +617,12 @@ export const RULES = [
 
       const before = ctx.text.slice(Math.max(0, ctx.index - 64), ctx.index);
       const after = ctx.text.slice(ctx.index + m.length, ctx.index + m.length + 8);
-      // Inside a UUID, or on either side of a decimal point.
-      if (/[0-9a-fA-F]-$/.test(before) || /^-[0-9a-fA-F]/.test(after)) return false;
+      // A fragment of a longer compound token: a UUID's middle groups, or the
+      // leading digits of a Google OAuth client id
+      // (778316396510-rhorms….apps.googleusercontent.com). Restricted to
+      // hyphen and underscore, because "Aadhaar No.2345 6789 0124" is a real
+      // way to write one and a full stop must not disqualify it.
+      if (/[A-Za-z0-9][-_]$/.test(before) || /^[-_][A-Za-z0-9]/.test(after)) return false;
       if (/[.]$/.test(before) || /^\.\d/.test(after)) return false;
       // An AWS account number is exactly twelve digits too, and says so.
       if (/\barn:|\baws\b|account[ _-]?(?:id|number)/i.test(before)) return false;

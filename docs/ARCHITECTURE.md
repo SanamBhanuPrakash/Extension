@@ -53,7 +53,7 @@ Strictly layered, no cycles. Each layer may import only from below.
       │
   detect.js             scanning, prefiltering, overlap resolution, masking
       │
-  rules.js              the 92 detectors, with prefilters, categories, proofs
+  rules.js              the 102 detectors, with prefilters, categories, proofs
       │
       ├── checksums.js    Luhn, Verhoeff, mod-97, CRC32, entropy, issuer ranges
       ├── identifiers.js  national IDs, AWS account decoding
@@ -63,6 +63,7 @@ Strictly layered, no cycles. Each layer may import only from below.
       ├── managed.js      organisation policy, merged locally
       ├── composer.js     finding the composer on an unknown site
       ├── ahocorasick.js  multi-pattern prefilter automaton
+      ├── sha256.js       fingerprints, synchronous, no WebCrypto
       └── profile.js      one-pass shape gate (digit/upper/alnum/base64 runs)
 
                           all of these import nothing at all
@@ -76,7 +77,18 @@ Strictly layered, no cycles. Each layer may import only from below.
   tabular.js            bulk-record detection
   risk.js               the 0-100 exposure score
   regulations.js        finding -> GDPR / DPDP / HIPAA / PCI / SEC / SEBI
+
+  documents.js          what is actually inside an attachment
+      ├── zipreader.js    central directory, ZIP64, DecompressionStream
+      ├── officedoc.js    DOCX / XLSX / PPTX / ODT / ODS / ODP
+      ├── pdftext.js      content streams, ToUnicode CMaps, kerning
+      └── imagemeta.js    EXIF / GPS / PNG text chunks, and stripping them
 ```
+
+The document layer sits beside the engine rather than under it: nothing in
+`detect.js` knows a file exists. `documents.js` turns bytes into text and the
+engine scans text, which is why the same extractors serve the extension, the
+CLI and the library without any of them sharing a code path.
 
 The three leaf modules importing nothing is load-bearing, not incidental. They
 are the layers that decide whether a finding is real, so they are the ones most
@@ -117,10 +129,18 @@ allowed to reject:
      finding
 ```
 
-Filters 3–5 are why the measured precision is 99.88% rather than the 25–75%
-published for regex-and-entropy tools. No single one gets there: Luhn alone
-accepts roughly 1 in 10 random numbers of the right length. It is the
-*compounding of independent constraints* that does the work.
+Filters 3–5 are why this fires once every 247 files on 87,306 files of real
+source rather than at the 25–75% precision published for regex-and-entropy
+tools. No single one gets there: Luhn alone accepts roughly 1 in 10 random
+numbers of the right length. It is the *compounding of independent
+constraints* that does the work.
+
+Several of those constraints exist only because the corpus in `bench/wild.js`
+produced the counter-example: a decimal-point guard on `payment_card` because
+the fractional part of a latitude passes Luhn, a distinct-digit floor on
+`aadhaar` because a test fixture reaches for `4444-5555-6666`, an ISO country
+check on `isin` because the last group of an uppercase UUID is twelve
+characters. Each one names its counter-example in the source.
 
 ## The prose pass
 
@@ -175,7 +195,7 @@ the secret.
 Most detectors are anchored on a literal nothing else uses — `AKIA`, `ghp_`,
 `xoxb-`, `sk-ant-`. Before compiling and running a backtracking regex, the
 scanner asks whether that literal appears in the text at all. On ordinary prose
-the overwhelming majority of the 92 detectors are skipped outright.
+the overwhelming majority of the 102 detectors are skipped outright.
 
 The obvious implementation asks `String.includes` once per literal — around 250
 full passes over the text, which dominated the scan on large pastes. The
@@ -194,10 +214,17 @@ of samples twice, once with every prefilter stripped, and asserts the findings
 are identical — and separately checks the automaton returns exactly what
 `includes()` would.
 
-Measured: a 46 KB document scanned in **3.2 ms, about 14.3 MB/s**, with all 95
+Measured: a 46 KB document scanned in **4.8 ms, about 9.6 MB/s**, with all 102
 detectors, table detection, the prose pass *and* injection detection enabled.
 The same document with *fewer* features took 11.1 ms before the automaton, the
 shape gate, the compiled-regex cache and the NER tokenisation work.
+
+One more, found by profiling rather than by reading: line numbers used to be
+computed by walking the text from position zero for each finding. That is
+O(n·f), which nobody notices while the largest input is a pasted paragraph and
+which became 73% of the entire scan once the prose pass was allowed to run on
+800 KB. One pass to collect the newline offsets and a binary search per finding
+took 800 KB from 5,156 ms to 431 ms.
 
 ## Surfaces
 
@@ -259,14 +286,30 @@ pickers are intercepted in the capture phase alongside paste and submit:
         │                   (nothing uploads while we look)
         ▼
   for each file
-        ├── binary, or > 4 MB?  ──▶ skipped, reported as skipped
-        └── text-like           ──▶ file.text() → scan()
+        ├── > 16 MB?  ──▶ reported as not inspected, with its size
+        └── bytes     ──▶ sniff() by magic number, never by extension
+              │
+              ├── zip   ──▶ officedoc.js  DOCX/XLSX/PPTX/ODT/ODS/ODP
+              ├── pdf   ──▶ pdftext.js    content streams, ToUnicode
+              ├── image ──▶ imagemeta.js  EXIF / GPS / PNG text chunks
+              ├── rtf   ──▶ control words stripped
+              └── text  ──▶ as-is
+              │
+              ▼
+        status: readable | partial | metadata | opaque   ──▶ scan(text)
         │
         ▼
   panel
-        ├── "Attach redacted copies" ──▶ new File([redacted], same name, same type)
-        ├── "Attach as-is"           ──▶ original files restored
-        └── dismiss                  ──▶ selection cleared
+        ├── findings, as for a paste
+        ├── "What Chhanni could not read", naming each file and why
+        └── what the button will do, per file, before it does it
+        │
+        ▼
+  rewriteMode(doc)
+        ├── text     ──▶ same name, same format, redacted in place
+        ├── convert  ──▶ <name>.redacted.txt, the words without the formatting
+        ├── strip    ──▶ the same image with its metadata removed
+        └── none     ──▶ unchanged, and the panel says so
         │
         ▼
   input.files = DataTransfer(chosen); re-dispatch change
@@ -275,6 +318,20 @@ pickers are intercepted in the capture phase alongside paste and submit:
 Replacing the file rather than blocking the upload is the same decision as
 redact-don't-block, applied one layer out: the person still gets to send their
 config and still gets their answer, without the credentials in it.
+
+The four rewrite modes exist because the honest answer differs by format. A
+`.env` is its own text, so a redacted `.env` is still a `.env`. A `.docx` is a
+ZIP of XML parts held together by relationship ids; substituting a placeholder
+into one and re-zipping produces a file that opens differently or not at all,
+so the offer is the extracted text instead and the panel says which it is
+doing. An image has no text to redact but does have metadata to remove, and
+`stripImageMetadata()` drops JPEG APPn segments and PNG ancillary chunks while
+copying the image data through byte for byte.
+
+The fourth mode is the important one. A file that can be neither rewritten nor
+stripped is handed back unchanged, *and named* — because a screenshot nobody
+could look inside must never produce the same silence as one that came back
+clean.
 
 ## Data flow: paste
 
@@ -352,6 +409,27 @@ a host app updates.
 `execCommand` is deprecated and still the only thing these editors reliably
 observe. Noted as a known future break.
 
+### Finding the composer at all
+
+Two places a composer hides from a content script, both confirmed in Chromium
+rather than assumed:
+
+| Where | What happens | What is done |
+|---|---|---|
+| Inside an **open shadow root** | the paste event is retargeted, so `e.target` is the host `<div>` and every editability test fails on it | every interception point reads `composedPath()[0]` |
+| Inside an **iframe** | a top-frame-only script sees nothing at all | `all_frames` and `match_about_blank` |
+| Inside a **closed shadow root** | nothing reaches it — not `composedPath`, not `innerText`, not any API an isolated world has | nothing; it is a stated limitation |
+
+`all_frames` means the script loads in every ad slot and tracking pixel on
+these pages too, so a subframe holds one idle `MutationObserver` and imports
+none of the engine until something typeable appears in it.
+
+Response scanning had the same blind spot from the other direction:
+`document.body.innerText` stops at a shadow boundary, so a chat UI built on web
+components would have had its entire transcript invisible. It now sweeps open
+roots, capped at 20,000 nodes and 200 roots, once per debounce interval rather
+than per mutation.
+
 ## Storage
 
 Two stores, chosen for different reasons.
@@ -361,16 +439,38 @@ Two stores, chosen for different reasons.
 | `chrome.storage.sync` | policy: mode, disabled rules, allowlist | small, and a user wants the same settings on their other machine |
 | `chrome.storage.local` | detection history, capped at 120 events | **must not sync** — even masked, a record of what you almost leaked is not something to replicate across devices |
 
-History entries hold `label`, `severity`, the **masked** preview, a **one-way**
-FNV-1a fingerprint, host, action and timestamp. Never the secret. The
-fingerprint earns its place by letting the popup say "6 distinct secrets"
-across 47 catches without ever holding one.
+History entries hold `label`, `severity`, the **masked** preview, a fingerprint,
+host, action and timestamp. Never the secret. The fingerprint earns its place
+by letting the popup say "6 distinct secrets" across 47 catches without ever
+holding one.
+
+The fingerprint is SHA-256 over a per-install random salt and the value,
+truncated to 128 bits — `src/sha256.js`, synchronous and about eighty lines,
+because `crypto.subtle` is async and making every finding's fingerprint a
+promise would turn the whole engine async for nothing a user could see. It is
+verified against `node:crypto` on 512 vectors.
+
+It replaced a 32-bit FNV-1a hash that this document used to call "one-way".
+Four billion outputs is a table anyone can build. The salt matters more than
+the algorithm did: an email address has perhaps thirty bits of real entropy, so
+an unsalted digest of one is recovered by trying candidates whatever the hash.
+The salt is generated on first run, kept in `storage.local` and **never
+synced**, so fingerprints cannot correlate a person's devices. The CLI leaves
+it empty, because a build pipeline wants reproducible digests.
 
 ## Scanning cost
 
-`scan()` is O(rules x text), plus one bounded pass for table detection. Ninety-two detectors over a prompt-sized string is
-roughly 0.3ms for 2KB, which is why the design can afford to be synchronous and
-avoid a service worker entirely.
+`scan()` is O(rules × text), plus one bounded pass for table detection and one
+for line offsets. A hundred detectors over a prompt-sized string is roughly
+0.3 ms for 2 KB, which is why the design can afford to be synchronous and avoid
+a service worker entirely.
+
+Above 2 MB it scans a 1.4 MB head and a 600 KB tail joined by a seam no
+detector can match across, maps every offset and line number back onto the
+original input, discards anything straddling the seam, and reports the size of
+the gap. The previous behaviour was a prefix, which is the worst available
+choice: an `.env` dump, a key block or a signature is at the end of a file far
+more often than in the middle.
 
 It runs **on paste and on Enter** — never on keystroke. Typing costs exactly
 nothing. The settings playground does scan on every input, which is fine: it is

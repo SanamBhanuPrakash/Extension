@@ -10,8 +10,12 @@ seed 20260925 · 424 cases · 241 positive · 183 hard negative
   recall      100.0%   0 missed
   F1          100.0%
 
-  46,206 byte document scanned in 3.2ms (14.3 MB/s), 95 detectors
+  46,206 byte document scanned in 4.8ms (9.6 MB/s), 102 detectors
 ```
+
+Every figure below is reproducible from this repository. Where a number is
+about time it is from the machine that produced the commit; run it on yours.
+What none of these numbers prove is in [LIMITATIONS.md](LIMITATIONS.md) § 7.
 
 ## Why this file exists
 
@@ -33,32 +37,40 @@ No tool in that study has both. The paper's own conclusion is that regex and
 entropy approaches reach high recall at poor precision — which is the problem
 this engine is built around.
 
-## Result
+## Result on the generated corpus
 
-Across ten seeds, **4,247 cases**:
+Across ten consecutive seeds, **4,244 cases** — 2,414 positive, 1,830 hard
+negative:
 
 | | |
 |---|---|
-| Precision | **99.88%** (2,417 true / 3 false positives) |
-| Recall | **99.88%** (3 missed) |
-| F1 | **99.88%** |
+| Precision | **100.00%** (2,414 true / 0 false positives) |
+| Recall | **100.00%** (0 missed) |
+| F1 | **100.00%** |
 
-Per seed:
-
-| seed | cases | precision | recall | F1 |
+| seed | cases | tp | fp | fn |
 |---|---|---|---|---|
-| 1 | 425 | 100.0% | 99.6% | 99.8% |
-| 7 | 424 | 100.0% | 99.2% | 99.6% |
-| 42 | 425 | 100.0% | 99.6% | 99.8% |
-| 999 | 425 | 100.0% | 100.0% | 100.0% |
-| 20260925 | 424 | 100.0% | 100.0% | 100.0% |
-| 31337 | 424 | 99.6% | 98.8% | 99.2% |
-| 8675309 | 423 | 99.6% | 99.6% | 99.6% |
-| 2718281 | 426 | 100.0% | 100.0% | 100.0% |
-| 1414213 | 426 | 100.0% | 99.6% | 99.8% |
-| 77777 | 425 | 99.6% | 99.2% | 99.4% |
+| 20260925 | 424 | 241 | 0 | 0 |
+| 20260926 | 425 | 242 | 0 | 0 |
+| 20260927 | 423 | 240 | 0 | 0 |
+| 20260928 | 424 | 241 | 0 | 0 |
+| 20260929 | 425 | 242 | 0 | 0 |
+| 20260930 | 424 | 241 | 0 | 0 |
+| 20260931 | 425 | 242 | 0 | 0 |
+| 20260932 | 425 | 242 | 0 | 0 |
+| 20260933 | 424 | 241 | 0 | 0 |
+| 20260934 | 425 | 242 | 0 | 0 |
 
-Reproduce any row with `node bench/run.js --seed 42`.
+Reproduce any row with `node bench/run.js --seed 20260927`.
+
+**Read that 100% as a warning, not a result.** A corpus written by the author
+of the rules cannot find the mistakes the author did not think of. Seed
+20260927 is the proof: sweeping ten seeds for this table surfaced a real miss
+— the leading twelve digits of a Google OAuth client id were being read as an
+Aadhaar number, and beat the OAuth detector in overlap resolution. One guard
+later the sweep is clean, and the corpus never would have told us on its own.
+
+The number that carries weight is the one below.
 
 ## Names and addresses in prose
 
@@ -84,38 +96,72 @@ whether a capitalised word is a person.
 ## Real code — the measurement that mattered most
 
 A self-authored corpus flatters its author. `bench/wild.js` scans public
-repositories nobody wrote for this benchmark: **10,472 files, 23.4 MB** from
-express, flask, axios, prettier and github/gitignore.
+repositories nobody wrote for this benchmark:
 
-The first run produced **601 findings — one every 17 files.** Almost all were
-wrong, and *not one of them* appeared in the synthetic corpus, which was
-simultaneously reporting 100%.
+> React · Django · Next.js · the AWS Terraform provider · Ansible · Prometheus
+> · kubernetes/client-go · Flask · Express · axios · prettier · the Rust book
+> · github/gitignore
+>
+> **87,306 files, 407.1 MB.**
+
+### It measures alarms, not findings
+
+A findings count is the wrong number. A file full of example email addresses
+produces findings and no alarm, because `low` on its own is not a reason to
+interrupt anybody. The number that decides whether a person keeps this
+installed is how often the panel actually appears.
 
 ```console
-$ node bench/wild.js /path/to/checkouts
+$ node bench/wild.js /path/to/checkouts --show
   total
-    10,472 files, 23.4 MB of real source
-    129 findings — one every 81 files
+    87,306 files, 407.1 MB of real source
+    7,883 findings — one every 11 files
+    353 would raise the panel — one every 247 files, 0.40%
+    228 of those at blocking severity
 ```
 
-Seven false-positive classes, each found only by looking at real code:
+|  | alarms | one every | blocking |
+|---|---|---|---|
+| before this round of fixes | 405 | 216 files | 282 |
+| after | **353** | **247 files** | **228** |
+
+Better precision *and* seven more detector classes, which is the trade this
+benchmark exists to police.
+
+### The false-positive classes it found
+
+Each is a real line from a real repository, and each is now pinned by a test
+carrying that exact string:
 
 | What fired | On what | Why it was wrong |
 |---|---|---|
-| `phone_india` ×411 | a Prettier formatting fixture of arbitrary integers | a bare ten-digit number is not a phone number |
-| `credential_in_prose` | `password: urlPassword`, `credentials: isCredentialsSupported` | that is JavaScript, not a password |
-| `prompt_injection` | a **.gitignore** explaining "ignore rules" | the imperative had no target |
-| `prompt_injection` | a threat model saying "leak secrets" | descriptive prose, no destination |
-| zero-width detection | Devanagari, Persian and emoji text | ZWJ and ZWNJ are *required* there |
-| `payment_card` | `123 456 789 123 456 789…` | a 15-digit window starting `34` that passed Luhn by chance |
-| `classification_marking` | "how every comment was **classified**" | a verb, not a marking |
+| `aadhaar` 135 → 66 | `namespace='11111111-2222-3333-4444-…'` | the middle of a UUID. Also AWS account numbers (also twelve digits), coordinates and timestamps. Verhoeff accepts one random twelve-digit number in ten, and this fires at *critical* |
+| `payment_card` 96 → 9 | `(0.0, -0.6358599286615808)` | the fractional part of a latitude: sixteen digits that pass Luhn in a Discover range. `\b` does not help, because `.` is not a word character |
+| `isin` 21 → 0 | `{4724A46A-3F20-5AAA-8180-CBD31D08E478}` | the last group of an uppercase UUID. An ISIN starts with an ISO 3166 country code; `CB` is not one |
+| `classification_marking` 53 → 15 | `This is for internal use only.` | how every library labels a private API. Ansible's config says it nine times |
+| `health_information` 7 → 0 | `a prescribed notification` (Go), `symptoms of bugs` (the Rust book) | medical words doing non-medical work — at *critical* severity |
+| `prompt_injection` 19 → 7 | `pretends to be the class it wraps` | Django's lazy object. Also `send the token to` in axios's docs, and `no system message:` in an Ansible log line |
+| `legal_hold` 20 → 8 | `remove any legal hold on the object` | S3 Object Lock has a setting with that name |
+| invisible characters | Django's **Khmer** translation | U+200B is Khmer's word separator — and Thai's, Lao's, Myanmar's and Tibetan's |
+| bidi overrides | Django's **Central Kurdish** translation | isolates U+2066–U+2069 are how a Latin placeholder sits inside an Arabic-script sentence. Only the two *overrides* are Trojan Source |
 
-**601 → 129, one every 81 files.** What remains: 103 email addresses in
-`CODE_OF_CONDUCT` and `AUTHORS` files (correct — they are email addresses), 23
-documentation passwords indistinguishable from real ones, 2 injection edge
-cases, and one genuine private key in a `.pem` test fixture.
+The last two are internationalisation bugs. Neither was findable by reasoning
+about the code; both needed real multilingual text.
 
-Every fix is locked behind a test that uses the exact string found in the wild.
+### Tuning a detector against it
+
+`unlabelled_secret` — the detector for a credential in a format nobody has
+published — was tuned entirely against this corpus:
+
+| | findings | files |
+|---|---|---|
+| first draft | 5,064 | — |
+| + wordiness and class-transition statistics | 3,272 | 32 |
+| + Go module checksums (`h1:`) excluded | 242 | 18 |
+| final | **234** | **18 of 87,306** |
+
+Two thirds of everything it reported lived in eleven `go.sum` files, which is
+what a lockfile is: a page of content hashes.
 
 ## The third-party datasets, and why they are not here
 
@@ -163,7 +209,7 @@ a lie:
 
 | | |
 |---|---|
-| 46 KB, 95 detectors + tables + prose + injection | **3.2 ms (14.3 MB/s)** |
+| 46 KB, 102 detectors + tables + prose + injection | **4.8 ms (9.6 MB/s)** |
 | 5,000 × 60 export | 504 ms (was 3,346 ms) |
 | Prose corpus, 105 KB | 17.9 ms |
 
@@ -212,9 +258,14 @@ difference from the number alone.
 
 What the layers above buy is a compounding of independent constraints: check
 digit **and** issuer range **and** not-a-known-benign-shape **and**, where
-needed, a context word. That is why the measured figure is 99.88% rather than
-90%. It is not 100%, and a tool that claims 100% on real-world input is either
-not measuring or not telling you.
+needed, a context word — and, for Aadhaar specifically, a floor of five
+distinct digits, because a twelve-digit test fixture reaches for
+`4444-5555-6666` and a real Aadhaar drawn from the space has four or fewer
+distinct digits about once in ten thousand.
+
+That compounding is why the measured figure on 87,306 real files is one alarm
+every 247 files. It is not zero, and a tool that claims zero false positives on
+real-world input is either not measuring or not telling you.
 
 ## What these numbers do *not* say
 
@@ -228,12 +279,24 @@ not measuring or not telling you.
   repositories ([SecretBench](https://arxiv.org/pdf/2303.06729): 818 repos,
   97,479 candidates); this corpus is synthetic and prompt-shaped. Running
   Chhanni against SecretBench is the obvious next step and has not been done.
+- **The wild corpus is source code.** Fifteen large public repositories are not
+  a sample of what people paste into an AI tool. Real prompts carry more prose,
+  more spreadsheets and more documents, and nobody has published a corpus of
+  them.
+- **There is no telemetry, by design** — so there is no measurement of
+  real-world false negatives at all. That is a real cost of the privacy
+  position. See [LIMITATIONS.md](LIMITATIONS.md) § 7.
 
 ## Regression guard
 
 `test/detect.test.js` fails the build if precision or recall drops below 99%
 on four seeds, and separately if name precision drops below 90% or recall below
 95% on the prose corpus. The benchmarks are not one-off claims; they are gates.
+
+Above them sit 96 unit tests, including one per false-positive class found in
+the wild, each carrying the exact string from the repository that produced it,
+and a document suite that runs the extractors against real DOCX, XLSX, PPTX,
+ODT, PDF, JPEG and PNG fixtures built by `tools/make-fixtures.py`.
 
 One caution it cannot cover: the GSTIN validator once had an off-by-one that
 made it reject every real GSTIN. The benchmark scored **100%** throughout,

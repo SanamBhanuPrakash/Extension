@@ -6,9 +6,9 @@
 
 ### Your prompt leaves your machine the instant you press Enter.<br>Chhanni looks at it first.
 
-**`99.88%` precision · `95` detectors · `8` scripts · on-device ML · `0` network permissions**
+**`102` detectors · `0.40%` alarm rate on 87,306 real files · reads DOCX/PDF/XLSX · `8` scripts · `0` network permissions**
 
-<img src="docs/images/panel.png" alt="Chhanni: exposure 90 of 100, 184 customer records detected in a pasted export" width="470">
+<img src="docs/images/panel.png" alt="Chhanni: exposure 88 of 100, an AWS key, a database URL with password, a Stripe key and a payment card found in a pasted .env" width="470">
 
 </div>
 
@@ -70,23 +70,40 @@ after, can. The gap between 71.7% and 98.9% is the design, and
 
 ## The measurement that changed the product
 
-Every benchmark in this repository said 100%. Then I scanned **10,472 files of
-real public source** — express, flask, axios, prettier, github/gitignore — that
-nobody wrote for my benchmark.
+Every benchmark in this repository says 100%. So the benchmark that decides
+whether anyone keeps this installed is a different one: **87,306 files of real
+public source** — React, Django, Next.js, the AWS Terraform provider, Ansible,
+Prometheus, client-go, Flask, Express, axios, prettier, the Rust book. 407 MB
+that nobody wrote for my benchmark.
 
-**601 findings. One every 17 files.** Almost all wrong. *None* of them
-detectable from the synthetic corpus.
+And it measures **alarms**, not findings. A file full of example email
+addresses produces findings and no alarm, because `low` on its own is not a
+reason to interrupt anybody.
+
+```console
+$ node bench/wild.js /path/to/checkouts
+  87,306 files, 407.1 MB of real source
+  353 would raise the panel — one every 247 files, 0.40%
+```
+
+Getting there meant fixing nine false-positive classes, every one a real line
+from a real repository:
 
 | What fired | On what |
 |---|---|
-| `phone_india` ×411 | a Prettier formatting fixture of arbitrary integers |
-| `credential_in_prose` | `password: urlPassword` — that's JavaScript |
-| `prompt_injection` | a **.gitignore** explaining "ignore rules" |
-| zero-width detection | Devanagari and emoji, where ZWJ is *required* |
-| `payment_card` | a 15-digit window starting `34` that passed Luhn by chance |
+| `aadhaar` ×135 | the middle of a UUID, an AWS account number, a coordinate's decimals |
+| `payment_card` ×96 | the fractional part of a latitude — `-0.6358599286615808` passes Luhn |
+| `isin` ×21 | the last group of an uppercase UUID |
+| `health_information` | "a **prescribed** notification" in Go, "**symptoms of** bugs" in the Rust book — at *critical* |
+| `classification_marking` ×53 | "This is for internal use only" — how every library labels a private API |
+| `prompt_injection` | Django's lazy object that "**pretends to be**" the class it wraps |
+| `legal_hold` ×20 | S3 Object Lock, which has a setting called "legal hold" |
+| invisible characters | **Khmer**, where U+200B is the word separator |
+| bidi overrides | **Central Kurdish**, where isolates are how the script works |
 
-**601 → 129, one every 81 files.** Every fix is locked behind a test using the
-exact string found in the wild. `node bench/wild.js` reproduces it.
+The last two are internationalisation bugs, and neither would have been found
+by thinking about it. Every fix is locked behind a test using the exact string
+found in the wild.
 
 That is the difference between a benchmark and a product.
 
@@ -102,16 +119,23 @@ from academic work on secret scanners
 | Gitleaks | 46% | 88% |
 | TruffleHog | — | 52% |
 | "Commercial X" | 25% | — |
-| **Chhanni** — credentials | **99.88%** | **99.88%** |
+| **Chhanni** — credentials | **100%** | **100%** |
 | **Chhanni** — names in prose | **97.8%** | **100%** |
 | **Chhanni** — addresses | **100%** | **100%** |
 
-4,247 cases over ten seeds, from a seeded PRNG so no real credential is
-committed here. Method, per-seed results and **what the numbers do not say** in
-[docs/BENCHMARK.md](docs/BENCHMARK.md) — including why
-[SecretBench](https://arxiv.org/pdf/2303.06729) cannot be run here (it requires
-a signed data agreement; `bench/secretbench.js` is written and waiting) and the
-honest limit that a check digit can never reach zero false positives.
+4,244 cases over ten seeds, from a seeded PRNG so no real credential is
+committed here.
+
+**And 100% on your own corpus is the number you should distrust.** A rule that
+is wrong in a way its author did not think to test scores perfectly. It is
+published because it is reproducible, not because it settles anything — which
+is why the 87,306-file measurement above exists, and why
+[SecretBench](https://arxiv.org/pdf/2303.06729) still matters: it requires a
+signed data agreement and BigQuery access, so it cannot be run here.
+`bench/secretbench.js` is written and waiting. Method, per-seed results and
+everything the numbers do not say are in
+[docs/BENCHMARK.md](docs/BENCHMARK.md) and
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ## Why it is right so much more often
 
@@ -129,18 +153,26 @@ candidate → literal prefilter → shape gate → pattern → check digit → b
 | **Required context** | Nine digits are nine digits until something says "SIN". Ten digits are not a phone number on their own |
 | **Offline decoding** | The **AWS account number is recovered from the key itself** — base32 and a bit shift, no API call. `alg:none` JWTs escalate to critical |
 
-**95 detectors. 27 prove the match**; the rest match a prefix nothing else uses
-and are labelled `shape`, not `proof`, everywhere they appear.
+**102 detectors. 28 prove the match**; the rest match a prefix nothing else
+uses and are labelled `shape`, not `proof`, everywhere they appear.
+
+There is also a detector for secrets in a format nobody has published yet:
+`unlabelled_secret` reads entropy, character-class transitions and how
+word-like a string is, and fires on a token standing alone with nothing around
+it to say what it is. It went from 5,064 findings to 234 across those 87,306
+files while still catching a bare 40-character key pasted on its own line.
 
 Coverage is global: Aadhaar, PAN, GSTIN, IFSC, UPI and Indian DL/passport/voter
 ID alongside CPF/CNPJ (BR), SIN (CA), NINO (UK), ABN/TFN (AU), EU VAT, ISIN,
 IMEI, SSN and IBAN — plus ~45 vendor credentials across cloud, source, AI,
 payments and platform.
 
-## 14.3 MB/s, with everything on
+## Fast enough to run on a keystroke
 
-A 46 KB paste, 95 detectors, table detection, the prose pass and injection
-detection — **3.2 ms**. It was 11.1 ms with *fewer* features.
+A 46 KB paste — 102 detectors, table detection, the prose pass and injection
+detection — in **4.8 ms**, about 9.6 MB/s. It was 11.1 ms with *fewer*
+features. (Figures from `node bench/run.js` on the machine that produced this
+commit; run it on yours.)
 
 - **A single-pass shape gate.** Twenty detectors have no literal to filter on
   because their patterns are pure shape. One walk of the string yields the
@@ -150,19 +182,54 @@ detection — **3.2 ms**. It was 11.1 ms with *fewer* features.
 - **Regexes compiled once**, not 95 times per scan.
 - **Bounded table processing** — a 5,000×60 export went 3,346 ms → 504 ms while
   still reporting the true row count.
+- **Line numbers by binary search.** Raising the name/address ceiling from
+  200 KB to 800 KB made an 800 KB paste take 5.1 seconds. `--cpu-prof` put 73%
+  of the scan in one function that walked the text from position zero for
+  every single finding — O(n·f), invisible while the largest input was a
+  pasted paragraph. One pass for the newline offsets and a binary search per
+  finding: **200 KB 798 ms → 246 ms, 800 KB 5,156 ms → 431 ms.**
 
 An optimisation that can change a result is a bug, so two tests assert exact
 equivalence.
 
-## It reads attachments, and fixes them
+## It opens the attachment
 
-People do not only paste secrets — they **attach** them. Chhanni intercepts
-drops and file pickers, reads text-like files locally, and offers something no
-other tool does: **attach a redacted copy instead.** Same name, same type,
-secrets replaced, everything the model needs left intact.
+People do not only paste secrets — they **attach** them. A dragged `.env` never
+touches the composer, and neither does the contract, the spreadsheet or the
+photograph.
 
-Files it cannot read — images, PDFs, office documents — now **say so**, rather
-than letting silence imply they were checked.
+Chhanni intercepts drops and file pickers and reads the bytes, routing by magic
+number rather than by extension — because an extension is only a claim the file
+makes about itself.
+
+| | |
+|---|---|
+| **DOCX · XLSX · PPTX · ODT · ODS · ODP** | Unzipped and parsed in the page. Sheets and tables become rows, so six employees in a spreadsheet read as *one bulk disclosure of six records*, not thirty findings. Document properties are read too — an Author field is a person's name. |
+| **PDF** | Content streams inflated, `ToUnicode` CMaps applied, kerning read as spaces. |
+| **JPEG · PNG · HEIC · AVIF** | Metadata: GPS to six decimal places, the owner's name, the device, the capture software. |
+
+No dependency was added for any of it. `DecompressionStream` is already in the
+browser and does both ZIP and PDF `FlateDecode`.
+
+<img src="docs/images/attachment.png" alt="A dropped .docx: exposure 98 of 100, legally privileged material, a payment card and an AWS key inside" width="440">
+
+Then it hands the file back, and is honest about what it can do to it:
+
+- a `.env` comes back as a `.env`, redacted in place;
+- a `.docx` comes back as **text**, redacted — because a `.docx` is a ZIP of
+  XML parts held together by relationship ids, and re-zipping a placeholder
+  into one of them produces a file that opens differently or not at all. The
+  panel says so before you press the button;
+- a photograph comes back as **the same photograph with its metadata gone** —
+  APPn segments and PNG ancillary chunks dropped, image data copied through
+  untouched. Verified by Chromium's own decoder: 16×16 before, 16×16 after,
+  572 bytes → 333, EXIF gone. `chhanni strip photo.jpg` does it from the shell.
+
+**There is no OCR, and there will not be.** Tesseract's WASM build would triple
+the package or require a network fetch, and the second one breaks the only
+promise this project makes. So a screenshot's pixels stay unread — and the
+panel names the file and says exactly that, rather than letting silence imply
+it was checked.
 
 ## It watches what comes back
 
@@ -173,6 +240,20 @@ aimed at whoever reads it next.
 
 A quiet notice, not a panel — the text has already arrived, so blocking it
 would be theatre.
+
+## It says where it is not looking
+
+<img src="docs/images/coverage.png" alt="The popup on an unwatched site: 'is not watched', and a button offering to watch it" width="330">
+
+The most dangerous belief a person can form about a tool like this is *it is
+installed, therefore I am protected.* Chhanni ships with 23 AI sites and is
+inert everywhere else — including on whatever your organisation self-hosts,
+which is often exactly where the sensitive prompts go.
+
+So the popup says which of three states the tab is in, reading the list from
+the manifest rather than from a second copy that can drift. Where a site is not
+covered, it offers to cover it. Under that, four things that are never covered,
+named rather than implied.
 
 ## For organisations, without a console
 
@@ -186,9 +267,11 @@ Internal codenames are matched on the device and never ship in the package.
 
 ## It makes no network call
 
-There is no `fetch` in the extension. The manifest requests **one** permission —
-`storage`, for your settings. Even the font is bundled locally, because a
-webfont request would tell a third party you are being shown a warning.
+There is no `fetch` in the extension. The manifest requests **two**
+permissions: `storage`, for your settings, and `scripting`, so the popup can
+extend coverage to a site you add yourself. Neither grants network access.
+Even the font is bundled locally, because a webfont request would tell a third
+party you are being shown a warning.
 
 CI fails the build if any shipped module references a network API, or if the
 permission set changes.
@@ -225,6 +308,7 @@ Add-ons are free. Store assets are generated at the required sizes in
 
 | | |
 |---|---|
+| **[LIMITATIONS](docs/LIMITATIONS.md)** | **Everything this does not do, in fifteen sections. Start here if you are deciding whether to trust it.** |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | Module graph, the four interception flows, the gating stack, storage split |
 | [BENCHMARK](docs/BENCHMARK.md) | Every number, how to reproduce it, and what it does not say |
 | [NER](docs/NER.md) | The on-device model, its 71.7% ceiling, the context layer, eight scripts |
@@ -232,31 +316,39 @@ Add-ons are free. Store assets are generated at the required sizes in
 | [PRIOR-ART](docs/PRIOR-ART.md) | Who did this first, who sells it, what this lacks |
 | [ROADMAP](docs/ROADMAP.md) | Where the exposure is, and what is genuinely left |
 | [PUBLISHING](docs/PUBLISHING.md) | Store requirements, fees, listing copy |
-| [DECISIONS](docs/DECISIONS.md) | Nineteen decision records, each with its cost |
+| [DECISIONS](docs/DECISIONS.md) | Twenty-seven decision records, each with its cost |
 | [CHANGELOG](CHANGELOG.md) · [PRIVACY](PRIVACY.md) | |
 
 ## What it does not do
 
-- **Images, PDFs and office documents are not read.** A screenshot of a
-  dashboard is a real, unhandled leak. It says so rather than staying silent.
-- **The gazetteer cannot generalise.** A Devanagari name nobody wrote down is
-  missed, and Devanagari coverage is thin — 93 entries is not a serious source.
-- **No coreference, no organisation disambiguation.** "She said the invoice was
-  wrong" is not linked back to Priya; the one remaining name false positive is
-  a company read as a person.
+The full version is [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — fifteen
+sections, written because a boundary nobody states is a boundary everybody
+crosses. The short version:
+
+- **No OCR.** Text that exists only as pixels is not read. The panel names the
+  file and says so; for JPEG and PNG it also offers to strip the metadata.
+- **23 sites out of the box.** Everywhere else it is inert, including anything
+  your organisation self-hosts. The popup says which state the tab is in and
+  offers to cover it.
+- **Closed shadow roots are unreachable.** Not by any API an extension has.
+- **The gazetteer cannot generalise.** A name in a caseless script that nobody
+  wrote down is missed.
+- **No coreference, no reliable person/company disambiguation.** "She said the
+  invoice was wrong" is not linked back to Priya.
+- **The score is a heuristic and a regulation name is not a legal conclusion.**
+  Both now say so, in the panel, next to themselves.
+- **It is advisory.** "Send as-is" exists on purpose. A guardrail, not an
+  enterprise DLP control, and it should not be sold as one.
 - **This idea is not new.** [Casper](https://arxiv.org/abs/2408.07004) published
   the architecture in 2024; **LayerX sold to Akamai for ~$205M in July 2026.**
   The gap that is real is that nobody publishes accuracy.
-- **It is advisory.** "Send as-is" exists on purpose. A guardrail, not an
-  enterprise DLP control, and it should not be sold as one.
-- **It names regulations; it does not make you compliant.**
 
 ## Tests
 
 ```console
 $ node --test test/*.test.js
-# tests 66
-# pass 66
+# tests 96
+# pass 96
 ```
 
 Checksums against known-good and known-bad vectors, a proof that the

@@ -265,7 +265,7 @@ change results is a bug, not an optimisation.
 **Context.** The generated corpus reported 100% precision. It had been
 reporting 100% for three versions.
 
-**Decision.** `bench/wild.js`: scan public repositories — 10,472 files of
+**Decision.** `bench/wild.js`: scan public repositories — 87,306 files of
 express, flask, axios, prettier, github/gitignore — and count how often the
 engine speaks.
 
@@ -346,3 +346,175 @@ it is the difference between a tool that feels instant and one people disable.
 `alnumRun`: an AWS secret is forty base64 characters including `/` and `+`, and
 gating on the alphanumeric run discarded every real one. The benchmark caught
 it immediately, which is the argument for having the benchmark be a gate.
+
+---
+
+### 20. Read the attachment, and route by magic bytes
+
+**Context.** A `.docx`, a PDF and a screenshot went through untouched while a
+`.env` was caught. People do not only paste secrets; they attach them, and the
+attachment is usually where the sensitive thing actually lives.
+
+**Decision.** Read every attachment as bytes, identify it by magic number, and
+extract what text there is. DOCX, XLSX, PPTX, ODT, ODS, ODP, text-based PDF and
+RTF are parsed in the page; images give up their EXIF.
+
+**Why bytes and not the extension.** An extension is a claim a file makes about
+itself. A `.txt` that is really a ZIP and a `.jpg` that is really a PDF are
+exactly the cases where being wrong matters.
+
+**Why no dependency.** `DecompressionStream` is in every browser and in Node,
+and it does both `deflate-raw` (ZIP) and `deflate` (PDF `FlateDecode`). The
+whole stack is five files and no `package.json` change.
+
+**Cost.** Five more parsers this project owns and must get right. Mitigated by
+`tools/make-fixtures.py`, which builds genuine containers with nothing but the
+standard library, and by a test suite that runs the extractors against them.
+
+---
+
+### 21. No OCR, and say so by name
+
+**Context.** The single most-requested capability, and the one most likely to
+be assumed present.
+
+**Decision.** There is no OCR. Instead, every file that could not be read is
+named in the panel, with the reason, and a scanned PDF is reported as scanned.
+
+**Why.** Tesseract's WASM build plus one language model is several megabytes.
+Bundling it roughly triples the package and invites the "what is this
+obfuscated blob" question at store review; fetching it on demand breaks the
+only promise this project makes. Neither trade is worth it.
+
+**Cost.** A screenshot of a dashboard is a real, unhandled leak.
+
+**What was done instead.** An image's metadata *is* read — a photograph's GPS
+block is a leak OCR would not have found either — and the warning comes with a
+fix: `stripImageMetadata()` drops JPEG APPn segments and PNG ancillary chunks
+and copies the image data through untouched.
+
+---
+
+### 22. Rewrite the file only as honestly as its format allows
+
+**Context.** "Attach a redacted copy" is the feature that makes the attachment
+path worth having. It cannot mean the same thing for every format.
+
+**Decision.** Four modes, and the panel says which one it will use, per file,
+before the button is pressed. `text` replaces in place. `convert` offers the
+extracted text as a `.txt` beside the original name. `strip` returns the same
+image without its metadata. `none` returns the file unchanged and says so.
+
+**Why not rewrite a `.docx` in place.** It is a ZIP of XML parts held together
+by relationship ids, with styles, a content-types manifest and often revision
+history. Substituting a placeholder into one part and re-zipping produces a
+file that opens differently, or does not open. A tool that silently damages an
+attachment loses the user permanently.
+
+**Cost.** `contract.docx` comes back as `contract.docx.redacted.txt`, which is
+not what was asked for. Saying so beforehand is the whole of the mitigation.
+
+---
+
+### 23. SHA-256, salted, and synchronous
+
+**Context.** `fingerprint()` was a 32-bit FNV-1a hash, and the documentation
+called it "one-way". Four billion outputs is a table anyone can build.
+
+**Decision.** SHA-256 over a per-install random salt, truncated to 128 bits,
+implemented in about eighty lines in `src/sha256.js`.
+
+**Why not `crypto.subtle`.** It is async. Making every finding's fingerprint a
+promise would turn `scan()` and everything downstream async for nothing a user
+could see, and WebCrypto is unavailable on an `http://` page, which some
+self-hosted front ends still are.
+
+**Why the salt matters more than the hash.** An email address has perhaps
+thirty bits of real entropy, so an unsalted digest of one is recovered by
+trying candidates whatever the algorithm. A per-install salt means there is no
+shared table to build and no correlation across a person's devices.
+
+**Cost.** Another primitive this project owns. Verified against `node:crypto`
+on 512 vectors including every block-boundary length.
+
+---
+
+### 24. Head and tail, not a prefix
+
+**Context.** Above 2 MB the scanner took the first 2 MB and reported
+`truncated`.
+
+**Decision.** The same budget buys a 1.4 MB head and a 600 KB tail, joined by a
+seam no detector can match across, with every offset and line number mapped
+back onto the original input and anything straddling the seam discarded.
+
+**Why.** An `.env` dump, a key block or a signature is at the *end* of a file
+far more often than in the middle. A prefix reliably missed the part that
+mattered.
+
+**Cost.** The middle is genuinely not read. The panel says how much, in
+megabytes, rather than leaving the gap implied.
+
+---
+
+### 25. Measure alarms, not findings
+
+**Context.** `bench/wild.js` reported a findings count. A file full of example
+email addresses produced findings and no interruption, so the number was not
+measuring the thing that decides whether anyone keeps this installed.
+
+**Decision.** The benchmark counts how often `scan()` returns a verdict that
+would raise the panel, and prints both.
+
+**Why.** Warning fatigue is the failure mode. One alarm every 247 files across
+87,306 files is a claim about the product; 7,883 findings is a claim about the
+engine, and only the first one matters to a person using it.
+
+**What it immediately caught.** Nine false-positive classes, two of them
+internationalisation bugs — Khmer's word separator read as an invisible-
+character attack, Central Kurdish bidi isolates read as Trojan Source. Neither
+was findable by reasoning about the code.
+
+---
+
+### 26. `scripting`, for a permission that was only ever a claim
+
+**Context.** `optional_host_permissions` had been in the manifest since the
+first version and nothing ever requested it. A permission declared and never
+used is a claim on the store listing the code does not make good on.
+
+**Decision.** The popup states which of three states the current tab is in and,
+where a site is not covered, offers to cover it — requesting the origin and
+registering the same content script the manifest declares, persisted across
+sessions, with an unwatch beside it.
+
+**Why.** A fixed list of 23 sites can never reach whatever an organisation
+self-hosts, which is exactly where its sensitive prompts go.
+
+**Cost.** A second permission (`scripting`) and a slightly larger review
+surface. It grants no network access, and the test that pins the permission
+list now also pins that every optional permission is one something asks for.
+
+---
+
+### 27. Say what the number is not
+
+**Context.** `93/100` reads as precision. `Regulated under: GDPR · SEBI` reads
+as a finding of fact about your organisation. Neither is what those elements
+mean.
+
+**Decision.** The score carries "a priority, not a probability" under the
+headline. The chips are headed "Rules about this kind of data" and carry a
+sentence saying that whether any regime is engaged depends on jurisdiction,
+purpose and lawful basis — none of which a content script can see. Advisory
+findings carry a "context" tag, and the panel says under the button what
+redacting will and will not do.
+
+**Why.** A figure that looks precise will be read as precise unless it says
+otherwise, and a chip that looks like a verdict will be read as one. Both
+mislabel the tool's authority, and the cost of that is either unwarranted
+alarm or unwarranted confidence.
+
+**Cost.** Four more lines of text in a panel whose whole design is about being
+readable in two seconds. Judged worth it: the two-second read is the score and
+the band, and everything else is for whoever wants it.

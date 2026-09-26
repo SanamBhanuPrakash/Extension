@@ -147,7 +147,7 @@ Name and address detection runs on every paste, so its cost is stated:
 
 | | |
 |---|---|
-| Full scan, 46 KB, 95 detectors + tables + prose + injection | **3.2 ms (14.3 MB/s)** |
+| Full scan, 46 KB, 102 detectors + tables + prose + injection | **4.8 ms (9.6 MB/s)** |
 | Prose corpus, 105 KB, names + addresses only | 17.9 ms (5.9 MB/s) |
 | Model weights | 21 KB, int8-quantised, decoded lazily |
 | Stoplist | 34 KB, parsed into a Set on first use |

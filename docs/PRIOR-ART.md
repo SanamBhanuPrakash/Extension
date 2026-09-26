@@ -37,8 +37,11 @@ numbers for secret detection come from academic work on source-code scanners
 recall. **No tool in that study achieves both.** The paper's conclusion is that
 regex-and-entropy approaches reach high recall at poor precision.
 
-Chhanni ships `bench/`, a seeded reproducible corpus, and measures **99.88%
-precision and 99.88% recall over 4,247 cases**. `node bench/run.js` prints it on
+Chhanni ships `bench/`, a seeded reproducible corpus, and measures **100%
+precision and 100% recall over 4,244 cases** — and then says, in the same
+breath, that a corpus written by the author of the rules is the number you
+should distrust, which is why `bench/wild.js` measures one alarm every 247
+files across 87,306 files of real public source. `node bench/run.js` prints it on
 your machine. The limits of that claim are written down in
 [BENCHMARK.md](BENCHMARK.md), including the fact that the corpus is
 self-authored and that a check digit can never reach zero false positives.
