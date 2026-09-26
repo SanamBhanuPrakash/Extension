@@ -354,7 +354,62 @@ maintenance obligation this project has taken on.
 
 ---
 
-## 12. It is advisory, not enforcement
+## 12. Redaction changes the text
+
+A placeholder is not the value it replaced, and sometimes that matters.
+
+- **Meaning.** `<PERSON_NAME_1>` carries less than "Priya Nair" for a model
+  asked to draft a reply. Placeholders are stable within a document — the same
+  value becomes the same token every time — so the *structure* survives ("the
+  key on line 4 is the one used on line 22"), but the content does not.
+- **Shape.** For debugging, a secret's length, character set and relationship
+  to neighbouring values can be the thing you needed help with. A placeholder
+  removes all three. `redactReversible()` exists for the case where you want
+  the answer back in terms of the original, but it is a library call, not
+  something the panel offers.
+- **Structured files.** See § 1. A `.docx` cannot be rewritten in place, and
+  what comes back is text.
+- **A missed secret cannot be redacted.** Redaction is exactly as good as
+  detection, and § 2 is about how good that is.
+
+---
+
+## 13. What the panel asks of the reader
+
+A person should not need to know what Luhn is, what entropy means, or what an
+issuer range does in order to decide whether to press Enter. So the panel leads
+with a score and one sentence, and everything technical is below the fold:
+severity groups first, then the note that explains *why* a detector is
+confident, then the coverage block.
+
+Where it still asks too much: the regulation chips assume you know what GDPR
+and SEBI are, the "context" tag assumes you will read the sentence under the
+button explaining it, and a finding note like "check character verified mod 36"
+is written for the person who wants proof rather than the person who wants a
+decision. That is a deliberate ordering, not an accident, but it is a
+compromise and it will not suit everybody.
+
+---
+
+## 14. The detector library will get harder to reason about
+
+There are 102 detectors. Each new one is a new interaction with overlap
+resolution, with the shape gate, and with every other detector's guards — and
+the regression surface grows faster than the list does.
+
+What holds it together today: every detector is a plain object in one file,
+with its prefilter, its guards and its counter-examples beside it; `PROOFS`
+names exactly which ones prove a match rather than matching a shape, pinned by
+a test; `bench/wild.js` measures the whole set against real code rather than
+each rule against its own fixtures; and the benchmarks are CI gates rather than
+reports.
+
+What does not scale: reading `src/rules.js` end to end. At some point the
+categories in `CATEGORIES` need to become files.
+
+---
+
+## 15. It is advisory, not enforcement
 
 "Send as-is" always works. That is deliberate — a tool that cannot be
 overridden gets uninstalled, and an uninstalled tool catches nothing — but it
@@ -370,7 +425,7 @@ means something.
 
 ---
 
-## 13. Enterprise
+## 16. Enterprise
 
 `storage.managed` is read on every load, so a policy pushed by Group Policy, a
 macOS configuration profile, Chrome Enterprise or Firefox `policies.json`
@@ -389,7 +444,7 @@ What does not exist:
 
 ---
 
-## 14. Library and CLI
+## 17. Library and CLI
 
 - Node ≥ 20, for `DecompressionStream` and modern regular-expression syntax.
 - Zero dependencies, which means every line of the ZIP reader, the PDF text
@@ -397,12 +452,15 @@ What does not exist:
   to maintain and to get wrong. SHA-256 is verified against `node:crypto` on
   512 vectors; the extractors are verified against fixtures built by
   `tools/make-fixtures.py` with nothing but the standard library.
-- The public API is `scan`, `redact`, `fingerprint`, `mask`, `summarise`,
-  `RULES` and `DEFAULT_POLICY`. Everything else is internal and will change.
+- The public API is `scan`, `redact`, `redactReversible`, `restore`,
+  `fingerprint`, `mask`, `summarise`, `RULES`, `DEFAULT_POLICY`, the document
+  layer (`extractDocument`, `sniff`, `rewriteMode`, `rewriteBytes`), the image
+  helpers (`readImageMetadata`, `describeImageMetadata`, `stripImageMetadata`)
+  and `sha256`. Everything else is internal and will change.
 
 ---
 
-## 15. Things this is not
+## 18. Things this is not
 
 - Not a DLP platform. No agent, no gateway, no endpoint coverage, no console.
 - Not a guarantee. It reduces accidental disclosure; it does not prevent

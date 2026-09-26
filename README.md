@@ -308,7 +308,7 @@ Add-ons are free. Store assets are generated at the required sizes in
 
 | | |
 |---|---|
-| **[LIMITATIONS](docs/LIMITATIONS.md)** | **Everything this does not do, in fifteen sections. Start here if you are deciding whether to trust it.** |
+| **[LIMITATIONS](docs/LIMITATIONS.md)** | **Everything this does not do, in eighteen sections. Start here if you are deciding whether to trust it.** |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | Module graph, the four interception flows, the gating stack, storage split |
 | [BENCHMARK](docs/BENCHMARK.md) | Every number, how to reproduce it, and what it does not say |
 | [NER](docs/NER.md) | The on-device model, its 71.7% ceiling, the context layer, eight scripts |
@@ -321,7 +321,7 @@ Add-ons are free. Store assets are generated at the required sizes in
 
 ## What it does not do
 
-The full version is [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — fifteen
+The full version is [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — eighteen
 sections, written because a boundary nobody states is a boundary everybody
 crosses. The short version:
 

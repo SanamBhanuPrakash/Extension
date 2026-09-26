@@ -10,14 +10,17 @@
   "exports": {
     ".": "./src/index.js",
     "./detect": "./src/detect.js",
-    "./redact": "./src/redact.js"
+    "./redact": "./src/redact.js",
+    "./documents": "./src/documents.js"
   },
   "files": [
     "src",
     "bin",
     "extension",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md",
+    "PRIVACY.md"
   ],
   "engines": {
     "node": ">=20"

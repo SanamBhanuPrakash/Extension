@@ -190,5 +190,5 @@ reads the attachment rather than guessing from its name, it costs nothing to
 run, and it is small enough that a sceptical reviewer can verify the no-network
 promise themselves in a few minutes.
 
-Everything it does not do is in [LIMITATIONS.md](LIMITATIONS.md), in fifteen
+Everything it does not do is in [LIMITATIONS.md](LIMITATIONS.md), in eighteen
 sections, because a boundary nobody states is a boundary everybody crosses.

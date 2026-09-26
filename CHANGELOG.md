@@ -196,7 +196,7 @@ newline offsets and a binary search per finding:
 
 ### And a document that owns the rest
 
-[docs/LIMITATIONS.md](docs/LIMITATIONS.md) — fifteen sections, every known gap,
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md) — eighteen sections, every known gap,
 each either fixed with a note on how or unfixed with a note on why. Written
 because a boundary nobody states is a boundary everybody crosses.
 
