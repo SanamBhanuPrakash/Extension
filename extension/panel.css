@@ -118,6 +118,23 @@
 }
 .chhanni-bulk p { margin: 0; font-size: 12px; line-height: 1.5; }
 
+/* Under the headline, so a heuristic is not read as a measurement. */
+.chhanni-scorenote {
+  display: block; font-size: 10.5px; line-height: 1.4;
+  color: var(--c-faint); margin-top: 3px;
+}
+/* An advisory finding is context, not a value. It cannot be redacted, and
+   mixing it in with things that can is the confusion 15.4 is about. */
+.chhanni-tag {
+  font-style: normal; font-size: 9px; font-weight: 590; line-height: 1;
+  text-transform: uppercase; letter-spacing: .06em;
+  margin-left: 6px; padding: 2.5px 5px; border-radius: 4px; vertical-align: 1px;
+  color: var(--c-faint); background: var(--c-sunken); border: 0.5px solid var(--c-hairline);
+}
+.chhanni-regnote {
+  margin: 7px 0 0; font-size: 10.5px; line-height: 1.45; color: var(--c-faint);
+}
+
 .chhanni-regimes { padding-top: 12px; }
 .chhanni-regimes h3 {
   margin: 0 0 6px; font: 590 10px/1.4 inherit;

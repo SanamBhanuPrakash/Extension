@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "description": "Catches API keys, credentials and personal data in your prompt before it leaves your browser. Nothing is ever sent anywhere.",
   "permissions": [
-    "storage"
+    "storage",
+    "scripting"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",

@@ -43,7 +43,8 @@
   }
 
   const { scan, groupFindings } = await import(url('engine/detect.js'));
-  const { exposureScore, BAND_TEXT } = await import(url('engine/risk.js'));
+  const { exposureScore, BAND_TEXT, SCORE_NOTE } = await import(url('engine/risk.js'));
+  const { REGIME_NOTE } = await import(url('engine/regulations.js'));
   const { isComposer } = await import(url('engine/composer.js'));
   const { mergePolicy } = await import(url('engine/managed.js'));
   const { redact } = await import(url('engine/redact.js'));
@@ -249,6 +250,10 @@
     const headText = el('div', 'chhanni-headtext');
     headText.append(el('strong', null, band || title));
     headText.append(el('p', null, title));
+    // The number looks precise. It is a ranking, and it says so — under the
+    // headline, where it is read once rather than crowding the digits.
+    headText.append(el('span', 'chhanni-scorenote', SCORE_NOTE));
+    gauge.title = SCORE_NOTE;
     head.append(gauge, headText);
 
     const close = el('button', 'chhanni-x', '\u00d7');
@@ -269,10 +274,15 @@
     // ── which law this touches ──────────────────────────────────────
     if (regimeNames && regimeNames.length) {
       const regs = el('div', 'chhanni-regimes');
-      regs.appendChild(el('h3', null, 'Regulated under'));
+      // Not "Regulated under", which reads as a finding of fact about your
+      // organisation. Chhanni cannot see the jurisdiction, the purpose or the
+      // lawful basis, and a chip that looks like a verdict is worse than no
+      // chip at all.
+      regs.appendChild(el('h3', null, 'Rules about this kind of data'));
       const chips = el('div', 'chhanni-chips');
       for (const name of regimeNames.slice(0, 5)) chips.appendChild(el('span', 'chhanni-chip', name));
       regs.appendChild(chips);
+      regs.appendChild(el('p', 'chhanni-regnote', REGIME_NOTE));
       body.appendChild(regs);
     }
 
@@ -298,8 +308,12 @@
         const row = el('div', 'chhanni-row');
         const label = el('span', 'chhanni-label', g.label);
         if (g.occurrences > 1) label.appendChild(el('i', 'chhanni-count', `\u00d7${g.occurrences}`));
+        // Advisory and blocking findings need to be told apart at a glance.
+        // "Payment card number" is a value that can be replaced; "Possible
+        // inside information" is what the text is *about*, and redacting it
+        // would destroy the question being asked.
+        if (g.advisory) label.appendChild(el('i', 'chhanni-tag', 'context'));
         row.appendChild(label);
-        // Advisory findings are context, not secrets, so there is nothing to mask.
         row.appendChild(el('code', g.advisory ? 'chhanni-quote' : null, g.preview));
         li.appendChild(row);
         if (g.note) li.appendChild(el('em', null, g.note));
@@ -331,6 +345,7 @@
 
     // ── actions ─────────────────────────────────────────────────────
     const redactable = findings.filter((f) => !f.advisory).length;
+    const advisory = findings.length - redactable;
     const actions = el('div', 'chhanni-actions');
     const redactBtn = el('button', 'chhanni-primary',
       redactLabel || (redactable
@@ -350,6 +365,16 @@
       const list = el('ul');
       for (const line of plan.slice(0, 4)) list.appendChild(el('li', null, line));
       if (plan.length > 4) list.appendChild(el('li', 'chhanni-more', `and ${plan.length - 4} more`));
+      block.appendChild(list);
+      panel.appendChild(block);
+    }
+
+    if (advisory) {
+      const block = el('div', 'chhanni-plan');
+      const list = el('ul');
+      list.appendChild(el('li', null, redactable
+        ? `Redacting replaces ${redactable} value${redactable === 1 ? '' : 's'}. The ${advisory} marked \u201ccontext\u201d stay \u2014 they are what the text is about, not values in it.`
+        : `Nothing here can be replaced with a placeholder. These ${advisory} are what the text is about, not values in it. This is a decision, not a fix.`));
       block.appendChild(list);
       panel.appendChild(block);
     }

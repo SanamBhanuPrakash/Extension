@@ -10,7 +10,21 @@
  * layer, not legal advice, and the wording throughout says so. Naming the
  * regime is what makes a warning actionable for the person who has to answer
  * for it — which, in most organisations, is not the person doing the pasting.
+ *
+ * What it cannot do, and must not appear to: decide whether anything is
+ * actually unlawful. That turns on jurisdiction, on the organisation, on the
+ * purpose, on the lawful basis, on the contract, on the sector — none of which
+ * a content script can see. "GDPR" on a chip means this kind of data is the
+ * kind GDPR is about. It does not mean a breach has occurred, and the panel
+ * says so in REGIME_NOTE rather than leaving the chip to be read as a verdict.
+ *
+ * Laws also move. Every reference below carries its article or section so a
+ * reader can check it against the current text, and so a stale one is visible
+ * rather than merely wrong.
  */
+
+/** Shown with the chips. Without it, a chip reads as an accusation. */
+export const REGIME_NOTE = 'These rules govern this kind of data. Whether any of them is engaged here depends on your jurisdiction, your purpose and your lawful basis — which Chhanni cannot see.';
 
 const G = (article, what) => ({ regime: 'GDPR', ref: article, what });
 const D = (section, what) => ({ regime: 'DPDP Act 2023', ref: section, what });

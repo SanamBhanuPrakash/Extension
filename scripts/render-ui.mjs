@@ -157,9 +157,23 @@ const stub = `
       local:{ get: async()=>({history:window.__HISTORY__}), set: async(v)=>{ window.__RECORDED__.push(v); } },
       onChanged:{ addListener:()=>{} },
     },
-    tabs:{ query: async()=>[{url:'https://claude.ai/new'}] },
-    runtime:{ getURL:(p)=>'/'+p, openOptionsPage:()=>{} },
+    tabs:{ query: async()=>[{ id: 1, url:'https://claude.ai/new'}], reload: async()=>{} },
+    runtime:{
+      getURL:(p)=>'/'+p,
+      openOptionsPage:()=>{},
+      getManifest:()=>window.__MANIFEST__,
+    },
+    permissions:{ contains: async()=>false, request: async()=>true, remove: async()=>true },
+    scripting:{
+      getRegisteredContentScripts: async()=>[],
+      registerContentScripts: async()=>{},
+      unregisterContentScripts: async()=>{},
+    },
   };`;
+
+// The popup reads coverage out of the real manifest rather than restating it,
+// so the harness has to hand it the real manifest.
+const manifestStub = `window.__MANIFEST__ = ${readFileSync(join(root, 'manifest.json'), 'utf8')};`;
 
 const BULK = ['customer_id,name,email,phone,city',
   ...Array.from({ length: 184 }, (_, i) =>
@@ -193,11 +207,14 @@ Customer record: r.iyer@northwind.co.in, phone 9876543210,
 card 4242 4242 4242 4242, PAN ABCPD1234E.
 Order 1234567890123456 went through fine.`;
 
-async function shot(name, file, width, dark, prep) {
+async function shot(name, file, width, dark, prep, extraInit) {
   const page = await browser.newPage({ viewport:{width,height:820}, colorScheme: dark?'dark':'light', deviceScaleFactor:2 });
   const errs = [];
   page.on('pageerror', e => errs.push(e.message));
+  await page.addInitScript(manifestStub);
   await page.addInitScript(stub);
+  // Runs after the stub, so it can override one piece of it.
+  if (extraInit) await page.addInitScript(extraInit);
   await page.goto(`http://127.0.0.1:8731/${file}`);
   await page.waitForTimeout(500);
   const extra = prep ? await prep(page) : '';
@@ -256,6 +273,12 @@ const fireDrop = (names) => async (page) => {
 
 await shot('popup-light', 'popup.html', 360, false);
 await shot('popup-dark', 'popup.html', 360, true);
+// The state that matters most: a site Chhanni does not ship with. A person who
+// believes "installed" means "protected" is in more danger than one who never
+// installed it.
+await shot('popup-unwatched', 'popup.html', 360, true,
+  async (page) => `offers to watch it: ${await page.evaluate(() => !document.getElementById('watchSite').hidden)}`,
+  `chrome.tabs.query = async () => [{ id: 1, url: 'https://ai.internal.northwind.co.in/chat' }];`);
 await shot('panel-dark', 'harness.html', 900, true, firePaste());
 await shot('panel-light', 'harness.html', 900, false, firePaste());
 await shot('panel-bulk', 'harness.html', 900, true, firePaste(BULK));
@@ -272,6 +295,7 @@ await shot('options-light', 'options.html', 800, false, async (p) => { await p.c
   const page = await browser.newPage({ viewport: { width: 760, height: 560 }, colorScheme: 'dark' });
   const errs = [];
   page.on('pageerror', (e) => errs.push(e.message));
+  await page.addInitScript(manifestStub);
   await page.addInitScript(stub);
   await page.goto('http://127.0.0.1:8731/shadow.html');
   await page.waitForTimeout(1100);
@@ -312,6 +336,7 @@ await shot('options-light', 'options.html', 800, false, async (p) => { await p.c
 
 // End-to-end: does "Redact and continue" actually clean the composer?
 const page = await browser.newPage({ viewport:{width:900,height:820} });
+await page.addInitScript(manifestStub);
 await page.addInitScript(stub);
 await page.goto('http://127.0.0.1:8731/harness.html');
 // The content script dynamic-imports eleven engine modules plus the font.
@@ -332,6 +357,7 @@ console.log('recorded to storage:', JSON.stringify(await page.evaluate(() => win
 const page2 = await browser.newPage({ viewport: { width: 900, height: 820 } });
 const errs2 = [];
 page2.on('pageerror', (e) => errs2.push(e.message));
+await page2.addInitScript(manifestStub);
 await page2.addInitScript(stub);
 await page2.goto('http://127.0.0.1:8731/harness.html');
 await page2.waitForTimeout(900);

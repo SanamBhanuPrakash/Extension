@@ -9,6 +9,18 @@
  * what drove it. The score is deliberately simple and fully explainable — every
  * contribution is listed, and the arithmetic is in this file. A score nobody
  * can reconstruct is a score nobody should trust.
+ *
+ * What it is not: a probability. 90/100 does not mean a nine-in-ten chance of
+ * anything, and the weights below are judgement written down, not measurement.
+ * The number exists to rank one paste against another and to be readable in
+ * the two seconds before somebody presses Enter. SCORE_NOTE says so in the
+ * panel, next to the number, because a figure that looks precise will be read
+ * as precise unless it says otherwise.
+ *
+ * It also flattens things that are not comparable — one AWS key, two hundred
+ * customer records and an unannounced acquisition are three different
+ * problems. That is what `drivers` is for: the number is the summary and the
+ * drivers are the thing itself.
  */
 
 const SEVERITY_WEIGHT = { critical: 34, high: 18, medium: 8, low: 2 };
@@ -75,6 +87,12 @@ export function exposureScore(findings, table = null) {
 
   return { score, band, headline, drivers };
 }
+
+/**
+ * Shown under the number, always. Six words that stop a heuristic from being
+ * read as a measurement.
+ */
+export const SCORE_NOTE = 'A priority, not a probability.';
 
 /** What the band means, in words the reader does not have to decode. */
 export const BAND_TEXT = {

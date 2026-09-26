@@ -226,9 +226,29 @@ test('no module in the shipped engine or extension can make a network call', asy
 test('the manifest requests no network permission', async () => {
   const { readFileSync } = await import('node:fs');
   const m = JSON.parse(readFileSync('extension/manifest.json', 'utf8'));
-  assert.deepEqual(m.permissions, ['storage']);
-  assert.ok(!m.permissions.includes('webRequest'));
+  // `scripting` is here so the popup can register the same content script on
+  // a site the person adds themselves; a self-hosted AI tool is exactly where
+  // the sensitive prompts go, and a fixed host list can never reach it. It
+  // grants no network access, which is the property this test protects.
+  assert.deepEqual(m.permissions, ['storage', 'scripting']);
+  for (const p of ['webRequest', 'webRequestBlocking', 'proxy', 'declarativeNetRequest', 'cookies', 'history', 'downloads', 'clipboardRead']) {
+    assert.ok(!m.permissions.includes(p), `${p} must never be requested`);
+  }
   assert.equal(m.manifest_version, 3);
+  assert.equal(m.content_scripts[0].all_frames, true);
+});
+
+test('every optional permission the manifest declares is one something asks for', async () => {
+  const { readFileSync } = await import('node:fs');
+  const m = JSON.parse(readFileSync('extension/manifest.json', 'utf8'));
+  const popup = readFileSync('extension/popup.js', 'utf8');
+  // A permission declared and never requested is a claim on the store listing
+  // that the code does not make good on. This one is now the "watch this site
+  // too" button.
+  assert.deepEqual(m.optional_host_permissions, ['https://*/*']);
+  assert.match(popup, /chrome\.permissions\.request/);
+  assert.match(popup, /chrome\.scripting\.registerContentScripts/);
+  assert.match(popup, /chrome\.scripting\.unregisterContentScripts/);
 });
 
 test('every detector claiming proof actually has a validator behind it', async () => {
