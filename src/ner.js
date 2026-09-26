@@ -92,6 +92,22 @@ const JOB_CUE = /^[\s,(]*(?:CEO|CTO|CFO|COO|CIO|CISO|VP|Director|Manager|Head|Le
 const PLACE_BEFORE = /\b(?:the|in|at|from|to|near|across|within|our|their)\s+$/i;
 const PLACE_AFTER = /^[\s,]*(?:region|regions|office|offices|branch|branches|team|cluster|clusters|server|servers|datacent(?:re|er)|data cent(?:re|er)|timezone|time zone|market|markets|store|stores|warehouse|campus|airport|zone|instance|node|endpoint|environment|deployment|release|version|API|SDK|repo|repository|pipeline|build)\b/i;
 
+/**
+ * Nouns that belong to document titles and headings rather than to people.
+ *
+ * This matters far more now that Chhanni reads .docx and .pptx than it did
+ * when it only ever saw pasted prose: the first thing a document extractor
+ * hands over is the title, and "Master Services Agreement" has precisely the
+ * shape of a three-part name — three capitalised words, none of them a common
+ * English word the existing gate would catch.
+ *
+ * These are trimmed from the ends of a run rather than used to reject it, so
+ * "Priya Nair Agreement" still reports Priya Nair. Occupational surnames
+ * (Baker, Marshall, Carpenter, Park) are deliberately absent: they are real
+ * surnames, and the cost of losing one is higher than the cost of a heading.
+ */
+const TITLE_NOUN = /^(?:agreement|services?|review|reports?|summary|memo|memorandum|minutes|proposal|statement|policy|overview|plan|update|notes?|deck|agenda|invoice|receipt|contract|addendum|annexure|annex|appendix|schedule|exhibit|terms?|conditions|disclosure|confidential|privileged|draft|final|version|roadmap|strategy|budget|forecast|analysis|assessment|audit|charter|guidelines?|handbook|manual|specification|requirements|template|checklist|register|ledger|balance|sheet|board|committee|meeting|quarter|quarterly|annual|monthly|weekly|master|standard|framework|process|procedure|protocol|records?|room|letter|intent|offer|quote|quotation|purchase|payroll|expenses?|reimbursement|onboarding|offboarding|incident|postmortem|retrospective|runbook|playbook|dashboard|metrics|objectives|targets|confidentiality|amendment|renewal|termination|invoicing|remittance|advice|slip|form|application|declaration|undertaking|affidavit|deed|title|clause|section|article)$/i;
+
 // ── address lexicons ─────────────────────────────────────────────────────
 
 const STREET_WORD = /^(?:Street|St|Road|Rd|Avenue|Ave|Lane|Ln|Drive|Dr|Boulevard|Blvd|Court|Ct|Place|Pl|Terrace|Way|Close|Crescent|Parade|Square|Sq|Highway|Hwy|Parkway|Pkwy|Circle|Cir|Trail|Marg|Nagar|Colony|Vihar|Puram|Layout|Cross|Main|Sector|Enclave|Extension|Chowk|Gali|Pura|Bagh|Garden|Gardens|Park|Estate|Township|Society|Complex|Heights|Residency|Apartments|Towers)\.?$/i;
@@ -223,6 +239,11 @@ export function findNames(text, options = {}) {
       j++;
     }
     if (!run.length) { i++; continue; }
+
+    // Heading words come off the ends first. See TITLE_NOUN.
+    while (run.length && TITLE_NOUN.test(run[run.length - 1].text)) run.pop();
+    while (run.length && TITLE_NOUN.test(run[0].text)) run.shift();
+    if (!run.length) { i = j; continue; }
 
     // A run made entirely of ordinary English words is title-cased prose, not a
     // person: "All Hands", "Public Holiday", "Funnel Reports", "Settings".

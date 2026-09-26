@@ -53,11 +53,33 @@ const HARNESS = `<!doctype html><html><head><meta charset="utf-8">
     Sure, one second — pasting the whole env file.</div></div>
 </div>
 <div class="composer"><textarea id="c" placeholder="Message…"></textarea></div>
+<script>
+  // Stands in for the AI site's own upload handler. Chhanni intercepts the
+  // first drop in the capture phase and re-dispatches an allowed one, so
+  // whatever lands here is exactly what would have been uploaded.
+  window.__ATTACHED__ = [];
+  document.getElementById('c').addEventListener('drop', (e) => {
+    for (const f of e.dataTransfer.files) {
+      window.__ATTACHED__.push({ name: f.name, size: f.size, type: f.type });
+    }
+  });
+</script>
 <script src="/content.js"></script></body></html>`;
+
+const fixtures = join(root, '..', 'test', 'fixtures');
 
 const server = createServer((req, res) => {
   const url = req.url.split('?')[0];
   if (url === '/harness.html') { res.writeHead(200, {'content-type':'text/html'}); return res.end(HARNESS); }
+  // Real fixture bytes, so the attachment path is exercised with a real ZIP
+  // container and a real JPEG rather than a string pretending to be one.
+  if (url.startsWith('/fixtures/')) {
+    let body;
+    try { body = readFileSync(join(fixtures, decodeURIComponent(url.slice(10)))); }
+    catch { res.writeHead(404); return res.end('nope'); }
+    res.writeHead(200, { 'content-type': 'application/octet-stream' });
+    return res.end(body);
+  }
   const p = join(root, decodeURIComponent(url));
   let body;
   try { body = readFileSync(p); } catch { res.writeHead(404); return res.end('nope'); }
@@ -163,6 +185,29 @@ const firePaste = (payload = LEAK) => async (page) => {
   return `panel shown, composer="${await page.inputValue('#c').then((v) => v.slice(0, 20))}"`;
 };
 
+/**
+ * Drops real files on the composer.
+ *
+ * Fetched over the harness server and turned into File objects in the page, so
+ * the content script sees the same bytes a browser would hand it from the
+ * user's disk — a genuine ZIP container, a genuine JPEG with an EXIF block.
+ */
+const fireDrop = (names) => async (page) => {
+  await page.evaluate(async (names) => {
+    const dt = new DataTransfer();
+    for (const name of names) {
+      const res = await fetch('/fixtures/' + name);
+      const buf = await res.arrayBuffer();
+      dt.items.add(new File([buf], name, { type: '' }));
+    }
+    document.getElementById('c').dispatchEvent(
+      new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+  }, names);
+  await page.waitForSelector('.chhanni-panel', { timeout: 8000 });
+  await page.waitForTimeout(400);
+  return `panel shown for ${names.join(', ')}`;
+};
+
 await shot('popup-light', 'popup.html', 360, false);
 await shot('popup-dark', 'popup.html', 360, true);
 await shot('panel-dark', 'harness.html', 900, true, firePaste());
@@ -170,6 +215,9 @@ await shot('panel-light', 'harness.html', 900, false, firePaste());
 await shot('panel-bulk', 'harness.html', 900, true, firePaste(BULK));
 await shot('panel-board', 'harness.html', 900, true, firePaste(BOARD));
 await shot('panel-prose', 'harness.html', 900, true, firePaste(PROSE));
+await shot('panel-docx', 'harness.html', 900, true, fireDrop(['contract.docx']));
+await shot('panel-image', 'harness.html', 900, true, fireDrop(['photo.jpg']));
+await shot('panel-sheet', 'harness.html', 900, true, fireDrop(['employees.xlsx', 'screenshot.png']));
 await shot('options-dark', 'options.html', 800, true, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
 await shot('options-light', 'options.html', 800, false, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
 
@@ -189,5 +237,22 @@ console.log('\n--- end-to-end redaction ---');
 console.log(final);
 console.log('\nverdict after redaction:', scan(final).verdict);
 console.log('recorded to storage:', JSON.stringify(await page.evaluate(() => window.__RECORDED__.length)) + ' write(s)');
+
+// End-to-end, attachments: a DOCX and a photograph go in, and what the site
+// receives is the redacted text and an image with its EXIF gone.
+const page2 = await browser.newPage({ viewport: { width: 900, height: 820 } });
+const errs2 = [];
+page2.on('pageerror', (e) => errs2.push(e.message));
+await page2.addInitScript(stub);
+await page2.goto('http://127.0.0.1:8731/harness.html');
+await page2.waitForTimeout(900);
+await fireDrop(['contract.docx', 'photo.jpg'])(page2);
+await page2.click('.chhanni-primary');
+await page2.waitForTimeout(400);
+const attached = await page2.evaluate(() => window.__ATTACHED__);
+console.log('\n--- end-to-end attachments ---');
+console.log('handed to the page:', JSON.stringify(attached, null, 2));
+if (errs2.length) console.log('page errors:', errs2.join(' | '));
+
 await browser.close();
 server.close();

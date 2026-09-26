@@ -17,6 +17,8 @@
   const { isComposer } = await import(url('engine/composer.js'));
   const { mergePolicy } = await import(url('engine/managed.js'));
   const { redact } = await import(url('engine/redact.js'));
+  const { extractDocument, rewriteMode, rewriteBytes, describeKind } =
+    await import(url('engine/documents.js'));
   const store = await import(url('store.js'));
 
   // panel.css is injected by the manifest, but a relative url() inside it
@@ -140,7 +142,7 @@
    * whoever wants it.
    */
   function showPanel({ result, title, onRedact, onProceed, onDismiss,
-                       redactLabel, proceedLabel, unread }) {
+                       redactLabel, proceedLabel, coverage, plan }) {
     closePanel();
     const { risk, band, table, groups, findings, regimeNames } = result;
     const verdict = result.verdict;
@@ -223,9 +225,19 @@
     if (panel.dataset.alsoText) {
       panel.appendChild(el('div', 'chhanni-also', panel.dataset.alsoText));
     }
-    if (unread && unread.length) {
-      panel.appendChild(el('div', 'chhanni-also',
-        `Not inspected: ${unread.join(', ')}. Images, PDFs and documents are not read.`));
+    // What was *not* read, named file by file. Silence here would be the
+    // worst outcome this extension can produce: a screenshot nobody could
+    // look inside, reported the same way as one that came back clean.
+    if (coverage && coverage.length) {
+      const block = el('div', 'chhanni-coverage');
+      block.appendChild(el('h3', null, 'What Chhanni could not read'));
+      const list = el('ul');
+      for (const line of coverage.slice(0, 4)) list.appendChild(el('li', null, line));
+      if (coverage.length > 4) {
+        list.appendChild(el('li', 'chhanni-more', `and ${coverage.length - 4} more`));
+      }
+      block.appendChild(list);
+      panel.appendChild(block);
     }
 
     // ── actions ─────────────────────────────────────────────────────
@@ -240,6 +252,18 @@
     proceedBtn.onclick = () => { closePanel(); record('sent'); onProceed(); };
     actions.append(redactBtn, proceedBtn);
     panel.appendChild(actions);
+
+    // Exactly what the redact button will do to each file. A .docx cannot be
+    // rewritten in place, and promising otherwise would be the lie that
+    // makes someone stop trusting the tool.
+    if (plan && plan.length) {
+      const block = el('div', 'chhanni-plan');
+      const list = el('ul');
+      for (const line of plan.slice(0, 4)) list.appendChild(el('li', null, line));
+      if (plan.length > 4) list.appendChild(el('li', 'chhanni-more', `and ${plan.length - 4} more`));
+      block.appendChild(list);
+      panel.appendChild(block);
+    }
 
     const hint = el('div', 'chhanni-hint');
     hint.append(el('kbd', null, 'Enter'),
@@ -393,38 +417,96 @@
   // this is the part no other tool offers — can be replaced in place by a
   // redacted copy that still carries everything the model needs to help.
 
-  const TEXTUAL = /\.(?:env|json|ya?ml|txt|md|log|csv|tsv|sql|sh|bash|zsh|fish|conf|cfg|ini|toml|properties|pem|key|crt|cer|xml|html?|jsx?|tsx?|mjs|cjs|py|rb|go|java|php|rs|c|cc|cpp|h|hpp|cs|swift|kt|scala|pl|lua|r|tf|tfvars|tfstate|gradle|dockerfile|gitconfig|npmrc|netrc|pgpass|htpasswd)$/i;
-  const MAX_FILE = 4 * 1024 * 1024;
+  const MAX_FILE = 16 * 1024 * 1024;
+  const mb = (n) => `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MB`;
 
-  const isTextual = (file) =>
-    file.size <= MAX_FILE &&
-    (TEXTUAL.test(file.name) ||
-     /^text\//.test(file.type) ||
-     /^application\/(?:json|xml|x-yaml|x-sh|javascript|x-pem-file)/.test(file.type) ||
-     (file.type === '' && !/\.(?:png|jpe?g|gif|webp|avif|pdf|zip|gz|tar|mp[34]|mov|docx?|xlsx?|pptx?)$/i.test(file.name)));
+  const nothingFound = () => ({
+    findings: [], groups: [], advisories: [], table: null,
+    regimeNames: [], verdict: 'clean', counts: {},
+  });
 
-  /** Reads and scans each text-like file. Binary and oversized files are skipped. */
+  /**
+   * Reads every attachment as bytes and extracts whatever text it holds.
+   *
+   * Routing is by magic number, not by extension. A `.txt` that is really a
+   * ZIP and a `.jpg` that is really a PDF are exactly the cases where being
+   * wrong matters, and an extension is only a claim the file makes about
+   * itself.
+   */
   async function inspect(files) {
     const reports = [];
     for (const file of files) {
-      if (!isTextual(file)) { reports.push({ file, skipped: true, findings: [] }); continue; }
-      let text;
-      try { text = await file.text(); } catch { reports.push({ file, skipped: true, findings: [] }); continue; }
-      if (text.includes('\u0000')) { reports.push({ file, skipped: true, findings: [] }); continue; }
-      const result = scan(text, policy);
-      reports.push({ file, text, ...result });
+      if (file.size > MAX_FILE) {
+        reports.push({
+          file, ...nothingFound(), status: 'opaque', kind: 'oversize', text: '',
+          reason: `${mb(file.size)} is past the ${mb(MAX_FILE)} Chhanni will read inside a page, so this file was not inspected at all.`,
+        });
+        continue;
+      }
+      let bytes;
+      try { bytes = new Uint8Array(await file.arrayBuffer()); } catch {
+        reports.push({
+          file, ...nothingFound(), status: 'opaque', kind: 'unreadable', text: '',
+          reason: 'The browser would not hand this file over, so it was not inspected.',
+        });
+        continue;
+      }
+      let doc;
+      try { doc = await extractDocument(bytes, file.name); } catch {
+        doc = { status: 'opaque', kind: 'unreadable', text: '',
+                reason: 'This file could not be parsed, so it was not inspected.' };
+      }
+      const result = doc.text ? scan(doc.text, policy) : nothingFound();
+      reports.push({
+        file, bytes, ...result,
+        text: doc.text || '', status: doc.status, kind: doc.kind,
+        note: doc.note || null, reason: doc.reason || null,
+        strippable: doc.strippable || false, doc,
+      });
     }
     return reports;
   }
 
-  /** Same name, same type, secrets replaced with stable placeholders. */
+  /** Same file, rewritten as honestly as its format allows. */
   function redactedCopy(report) {
-    if (!report.findings.length || report.skipped) return report.file;
-    const cleaned = redact(report.text, report.findings).text;
-    return new File([cleaned], report.file.name, {
-      type: report.file.type || 'text/plain',
-      lastModified: report.file.lastModified,
-    });
+    if (!report.bytes) return report.file;
+    const plan = rewriteMode(report.doc);
+    if (plan.mode === 'none') return report.file;
+    // Nothing found and nothing to strip: hand back exactly what was given.
+    if (plan.mode !== 'strip' && !report.findings.length) return report.file;
+
+    const cleaned = report.text ? redact(report.text, report.findings).text : '';
+    const out = rewriteBytes(report.bytes, report.doc, cleaned);
+    if (!out) return report.file;
+    const name = out.name(report.file.name);
+    const type = plan.mode === 'convert' ? 'text/plain'
+      : (report.file.type || (plan.mode === 'text' ? 'text/plain' : ''));
+    return new File([out.bytes], name, { type, lastModified: report.file.lastModified });
+  }
+
+  /** One line per file that was not fully read, naming the file and the reason. */
+  function coverageLines(reports) {
+    const out = [];
+    for (const r of reports) {
+      if (r.status === 'readable') continue;
+      const detail = [r.note, r.reason].filter(Boolean).join(' ');
+      out.push(detail ? `${r.file.name} \u2014 ${detail}` : r.file.name);
+    }
+    return out;
+  }
+
+  /** One line per file the redact button will change, saying how. */
+  function planLines(reports) {
+    const out = [];
+    for (const r of reports) {
+      const plan = rewriteMode(r.doc);
+      if (plan.mode === 'strip') {
+        out.push(`${r.file.name} \u2014 ${plan.explain}`);
+      } else if (r.findings.length && (plan.mode === 'convert' || plan.mode === 'none')) {
+        out.push(`${r.file.name} \u2014 ${plan.explain}`);
+      }
+    }
+    return out;
   }
 
   function fileListFrom(files) {
@@ -437,18 +519,20 @@
 
   /** Shared flow for both drop and file-input selection. */
   async function guardFiles(files, { onAllow, onCancel }) {
-    const reports = await inspect(files);
+    let reports;
+    try { reports = await inspect(files); } catch { onAllow(files); return; }
+
     const all = reports.flatMap((r) => r.findings);
-    const unreadable = reports.filter((r) => r.skipped);
+    const coverage = coverageLines(reports);
+    const strippable = reports.filter((r) => rewriteMode(r.doc).mode === 'strip');
 
     // Nothing found, but something could not be read: say so rather than
-    // letting silence imply the file was checked. A screenshot of a dashboard
-    // is a common leak and this extension cannot see inside it.
-    if (!all.length) {
-      if (unreadable.length && policy.mode !== 'off') {
-        showNotice(`Chhanni cannot read ${unreadable.length === 1
-          ? unreadable[0].file.name
-          : `${unreadable.length} of these files`} \u2014 images, PDFs and documents are not inspected. Check it yourself before sending.`);
+    // letting silence imply the file was checked.
+    if (!all.length && !strippable.length) {
+      if (coverage.length && policy.mode !== 'off') {
+        showNotice(coverage.length === 1
+          ? coverage[0]
+          : `Chhanni could not read ${coverage.length} of these files. Check them yourself before sending.`);
       }
       onAllow(files);
       return;
@@ -456,7 +540,6 @@
 
     const dirty = reports.filter((r) => r.findings.length);
     const names = dirty.map((r) => r.file.name).join(', ');
-    const unread = reports.filter((r) => r.skipped).map((r) => r.file.name);
 
     // Merge the per-file scans into one result the panel can render.
     const merged = {
@@ -469,14 +552,31 @@
     };
     merged.band = BAND_TEXT[merged.risk.band];
 
+    // When nothing was readable and the only problem is metadata, this is not
+    // a warning, it is a one-click fix — so the button says what it does. A
+    // photograph's EXIF still produces findings (an Artist field is a person's
+    // name), which is why this tests where the text came from rather than
+    // whether there was any.
+    const metadataOnly = strippable.length > 0 && reports.every((r) => r.status !== 'readable');
+    // The score band reads "nothing worth stopping for" at this level, which
+    // contradicts a panel that is, visibly, stopping. When the reason we are
+    // here is metadata, say that instead.
+    if (metadataOnly) merged.band = 'An image carries more than its picture.';
+    const title = metadataOnly
+      ? `${strippable.length === 1 ? strippable[0].file.name : `${strippable.length} images`} carr${strippable.length === 1 ? 'ies' : 'y'} metadata`
+      : all.length === 1
+        ? `${all[0].label} in ${names}`
+        : `${all.length} things in ${dirty.length === 1 ? names : `${dirty.length} attached files`}`;
+
     showPanel({
       result: merged,
-      title: all.length === 1
-        ? `${all[0].label} in ${names}`
-        : `${all.length} things in ${dirty.length === 1 ? names : `${dirty.length} attached files`}`,
-      redactLabel: `Attach redacted ${dirty.length === 1 ? 'copy' : 'copies'}`,
+      title,
+      redactLabel: metadataOnly
+        ? 'Remove the metadata and attach'
+        : `Attach redacted ${dirty.length === 1 && !strippable.length ? 'copy' : 'copies'}`,
       proceedLabel: 'Attach as-is',
-      unread,
+      coverage,
+      plan: planLines(reports),
       onRedact: () => onAllow(reports.map(redactedCopy)),
       onProceed: () => onAllow(files),
       onDismiss: onCancel,
