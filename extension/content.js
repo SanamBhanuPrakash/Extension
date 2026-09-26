@@ -12,6 +12,36 @@
  */
 (async () => {
   const url = (p) => chrome.runtime.getURL(p);
+
+  // ────────────────────────────────────────────────────────────── frames
+  //
+  // The manifest asks for all_frames, because a composer inside an iframe is
+  // still a composer and a top-frame-only content script sees straight past
+  // it. Several products already put the editor in one; more will.
+  //
+  // The cost is that every ad slot, analytics pixel and 1x1 tracker on these
+  // pages loads this script too. So a subframe pays for the engine only once
+  // it actually contains something a person can type into — which an ad slot
+  // never does. Until then it holds one idle MutationObserver and nothing
+  // else.
+  const EDITABLE = 'textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]';
+  const hasEditable = () => {
+    try { return !!document.querySelector(EDITABLE); } catch { return false; }
+  };
+  if (window !== window.top && !hasEditable()) {
+    await new Promise((resolve) => {
+      let obs;
+      try {
+        obs = new MutationObserver(() => {
+          if (!hasEditable()) return;
+          obs.disconnect();
+          resolve();
+        });
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+      } catch { /* no documentElement yet: this frame is not a chat */ }
+    });
+  }
+
   const { scan, groupFindings } = await import(url('engine/detect.js'));
   const { exposureScore, BAND_TEXT } = await import(url('engine/risk.js'));
   const { isComposer } = await import(url('engine/composer.js'));
@@ -32,6 +62,7 @@
 
   const DEFAULTS = { mode: 'warn', disabled: [], allow: [] };
   let policy = DEFAULTS;
+  let salt = '';
 
   /**
    * User settings, with any organisation policy merged over them.
@@ -39,6 +70,28 @@
    * GPO, a macOS profile, Chrome Enterprise, Firefox policies.json. It is a
    * local read; no request leaves the machine.
    */
+  /**
+   * A random string mixed into every fingerprint, generated once per install
+   * and kept in local storage — never in sync, so it does not travel between
+   * this person's devices and cannot correlate them.
+   *
+   * Without it, a fingerprint of a low-entropy value such as an email address
+   * is recoverable by anyone willing to hash candidates, however strong the
+   * hash. With it there is no shared table to build. Chhanni logs nothing
+   * anyway; this is for the fork that adds logging.
+   */
+  async function loadSalt() {
+    try {
+      const stored = await chrome.storage.local.get('fpSalt');
+      if (typeof stored.fpSalt === 'string' && stored.fpSalt.length >= 22) return stored.fpSalt;
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      const fpSalt = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+      await chrome.storage.local.set({ fpSalt });
+      return fpSalt;
+    } catch { return ''; }
+  }
+
   async function loadPolicy() {
     let user = DEFAULTS;
     try {
@@ -48,7 +101,9 @@
     let managed = null;
     try { managed = (await chrome.storage.managed.get(null)) || null; } catch { /* unmanaged */ }
     policy = mergePolicy(user, managed && Object.keys(managed).length ? managed : null);
+    policy.fingerprintSalt = salt;
   }
+  salt = await loadSalt();
   await loadPolicy();
   chrome.storage.onChanged?.addListener(() => { loadPolicy().catch(() => {}); });
 
@@ -60,6 +115,27 @@
   const isEditable = (el) => {
     if (!el || (el.tagName !== 'TEXTAREA' && !el.isContentEditable)) return false;
     try { return isComposer(el); } catch { return true; }
+  };
+
+  /**
+   * The element a person actually typed into.
+   *
+   * An event that crosses a shadow boundary is retargeted: paste into a
+   * <textarea> inside an open shadow root arrives with `e.target` set to the
+   * *host* element, which is a plain <div> and fails every editability test.
+   * Verified in Chromium, not assumed. composedPath()[0] is the real one.
+   *
+   * A closed shadow root is not reachable at all — not by composedPath, not by
+   * innerText, not by any API available to an extension's isolated world. That
+   * is a genuine blind spot and it is written down in docs/LIMITATIONS.md
+   * rather than papered over.
+   */
+  const eventTarget = (e) => {
+    try {
+      const path = e.composedPath && e.composedPath();
+      if (path && path.length) return path[0];
+    } catch { /* fall through */ }
+    return e.target;
   };
   const readComposer = (el) => (el.tagName === 'TEXTAREA' ? el.value : el.innerText);
 
@@ -116,6 +192,19 @@
     return sensitive && sensitive < total
       ? `${total} things ${where}, ${sensitive} of them sensitive`
       : `${total} things ${where}`;
+  }
+
+  /**
+   * What the scanner did not look at, when an input was too large to read
+   * whole. Two million bytes is the ceiling; past it Chhanni reads the front
+   * and the back and says how much fell between, rather than reporting a
+   * clean result over a document it only partly opened.
+   */
+  function scanCoverage(result, what = 'This') {
+    const c = result && result.coverage;
+    if (!c) return [];
+    const size = (n) => `${(n / 1048576).toFixed(1)} MB`;
+    return [`${what} is ${size(c.total)} \u2014 Chhanni read the first ${size(c.head)} and the last ${size(c.tail)}. The ${size(c.skipped)} between them was not read.`];
   }
 
   const SEVERITY_TITLE = {
@@ -327,12 +416,42 @@
   const seenResponses = new Set();
   let responseTimer = null;
 
+  /**
+   * The page's rendered text, including open shadow roots.
+   *
+   * `document.body.innerText` stops at a shadow boundary — measured in
+   * Chromium, where text inside an open root is rendered on screen and absent
+   * from innerText. A chat UI built on web components would therefore have had
+   * its entire transcript invisible to the response scanner.
+   *
+   * The sweep is capped and runs at most once per debounce interval, so the
+   * cost is one querySelectorAll on a settled DOM rather than per mutation.
+   */
+  const MAX_SWEEP_NODES = 20000;
+  const MAX_SHADOW_ROOTS = 200;
+
+  function visibleText() {
+    let text = '';
+    try { text = document.body?.innerText || ''; } catch { return ''; }
+    let nodes;
+    try { nodes = document.body?.querySelectorAll('*'); } catch { return text; }
+    if (!nodes || nodes.length > MAX_SWEEP_NODES) return text;
+    let roots = 0;
+    for (const node of nodes) {
+      const root = node.shadowRoot;   // null for closed roots, and for most nodes
+      if (!root) continue;
+      if (++roots > MAX_SHADOW_ROOTS) break;
+      try { text += '\n' + (root.textContent || ''); } catch { /* detached */ }
+    }
+    return text;
+  }
+
   function inspectResponses() {
     if (policy.watchResponses === false || policy.mode === 'off') return;
     // Only the most recent stretch of the page: an assistant reply is appended
     // at the end, and re-reading the whole transcript on every mutation would
     // be both slow and noisy.
-    const body = document.body?.innerText || '';
+    const body = visibleText();
     if (body.length < 40) return;
     const tail = body.slice(-12000);
 
@@ -370,7 +489,7 @@
 
   // ----------------------------------------------------------- intercept
   document.addEventListener('paste', (e) => {
-    const target = e.target;
+    const target = eventTarget(e);
     if (!isEditable(target) || policy.mode === 'off') return;
     const text = e.clipboardData?.getData('text/plain');
     if (!text) return;
@@ -395,6 +514,7 @@
     showPanel({
       result,
       title: headline(result, 'in what you pasted'),
+      coverage: scanCoverage(result, 'What you pasted'),
       onRedact: () => insert(redact(text, result.findings).text),
       onProceed: () => insert(text),
     });
@@ -492,6 +612,8 @@
       const detail = [r.note, r.reason].filter(Boolean).join(' ');
       out.push(detail ? `${r.file.name} \u2014 ${detail}` : r.file.name);
     }
+    // A single attachment can also be too large to read whole.
+    for (const r of reports) out.push(...scanCoverage(r, r.file.name));
     return out;
   }
 
@@ -588,7 +710,7 @@
     const files = [...(e.dataTransfer?.files || [])];
     if (!files.length) return;
 
-    const target = e.target;
+    const target = eventTarget(e);
     e.preventDefault();
     e.stopPropagation();
 
@@ -604,7 +726,7 @@
   }, true);
 
   document.addEventListener('change', (e) => {
-    const input = e.target;
+    const input = eventTarget(e);
     if (policy.mode === 'off' || Date.now() < fileBypassUntil) return;
     if (!(input instanceof HTMLInputElement) || input.type !== 'file') return;
     const files = [...(input.files || [])];
@@ -627,7 +749,7 @@
   document.addEventListener('keydown', (e) => {
     if (!isSubmitKey(e) || policy.mode === 'off' || Date.now() < bypassUntil) return;
     if (panel) return; // the panel owns Enter while it is open
-    const target = e.target;
+    const target = eventTarget(e);
     if (!isEditable(target)) return;
 
     const result = scan(readComposer(target), policy);
@@ -642,6 +764,7 @@
     showPanel({
       result,
       title: headline(result, 'about to be sent'),
+      coverage: scanCoverage(result, 'This message'),
       onRedact: () => writeComposer(target, redact(text, result.findings).text),
       onProceed: () => {
         bypassUntil = Date.now() + 2000;

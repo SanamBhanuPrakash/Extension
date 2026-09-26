@@ -179,7 +179,7 @@ test('findings expose a masked preview and a one-way fingerprint', () => {
   const f = scan('AKIAIOSFODNN7EXAMPLE').findings[0];
   assert.ok(!f.preview.includes('OSFODNN7'));
   assert.equal(f.fingerprint, fingerprint('AKIAIOSFODNN7EXAMPLE'));
-  assert.match(f.fingerprint, /^[0-9a-f]{8}$/);
+  assert.match(f.fingerprint, /^[0-9a-f]{32}$/);
   assert.equal(f.line, 1);
 });
 
@@ -443,6 +443,39 @@ test('a huge paste is truncated rather than hanging', () => {
   assert.equal(r.truncated, true);
   assert.ok(r.scanned <= 2_000_000);
   assert.ok(Date.now() - started < 5000, 'must not hang');
+});
+
+test('a huge paste is scanned at both ends, not just the front', () => {
+  // The old behaviour took a prefix, which misses the end of a file — and an
+  // .env dump, a key block or a signature lives at the end far more often
+  // than in the middle.
+  const filler = 'nothing sensitive on this line at all\n'.repeat(60000); // ~2.2 MB
+  const doc = `AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n${filler}GITHUB=ghp_${'A'.repeat(36)}\n`;
+  const r = scan(doc);
+
+  assert.equal(r.truncated, true);
+  const ids = r.findings.map((f) => f.ruleId);
+  assert.ok(ids.includes('aws_access_key_id'), 'the head is scanned');
+  assert.ok(ids.includes('github_token'), 'the tail is scanned');
+
+  // Offsets and line numbers must refer to the original input, not to the
+  // joined window the scanner actually looked at.
+  for (const f of r.findings) {
+    assert.equal(doc.slice(f.start, f.end), f.match);
+    assert.equal(doc.split('\n')[f.line - 1].includes(f.match), true);
+  }
+
+  assert.equal(r.coverage.total, doc.length);
+  assert.equal(r.coverage.skipped, doc.length - r.scanned);
+});
+
+test('nothing is reported from across the seam between the two windows', () => {
+  // A rule must not match text that is only adjacent because two distant
+  // windows were joined. The seam is wide enough that it cannot happen, and
+  // anything straddling it is dropped regardless.
+  const filler = 'x'.repeat(2_400_000);
+  const r = scan(`AKIA${filler}IOSFODNN7EXAMPLE`);
+  assert.equal(r.findings.length, 0);
 });
 
 test('a rule that throws degrades only itself', async () => {

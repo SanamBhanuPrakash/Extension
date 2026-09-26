@@ -3,11 +3,19 @@
  *
  * Everything here lives in chrome.storage.local and is never synced, never
  * uploaded and never leaves the profile. What we keep is deliberately the
- * *masked* preview and a one-way fingerprint, not the secret — so even a
- * later bug that leaks this store leaks nothing usable.
+ * *masked* preview and a salted fingerprint, not the secret.
  *
  * The fingerprint earns its place: it lets the popup say "you have pasted
- * this same key 6 times" without ever holding the key.
+ * this same key 6 times" without ever holding the key. It is SHA-256 over a
+ * random per-install salt and the value, truncated to 128 bits.
+ *
+ * What that is not: a guarantee. The masked preview keeps the first and last
+ * few characters, which is the point — you have to be able to recognise your
+ * own key — and for a short, predictable value those characters plus the
+ * hostname and the timestamp narrow things considerably. This store is
+ * designed so a leak of it is not a leak of your credentials. It is not
+ * designed to survive an attacker who already has your browser profile, and
+ * neither is anything else in it.
  */
 const MAX_LOG = 120;
 const KEY = 'history';

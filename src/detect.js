@@ -5,7 +5,7 @@
  *
  * Findings never carry the raw secret to anything that persists. `match` is
  * available in-process for redaction; `preview` is the masked form and
- * `fingerprint` is a one-way hash, which is what logging and telemetry may
+ * `fingerprint` is a salted SHA-256, which is what logging and telemetry may
  * use. There is no telemetry in this project, but the shape matters: someone
  * will fork this and add some, and the fork should be safe by construction.
  */
@@ -18,6 +18,7 @@ import { detectInjection } from './injection.js';
 import { codenameRule } from './managed.js';
 import { build as buildAutomaton } from './ahocorasick.js';
 import { profile, couldMatch } from './profile.js';
+import { sha256hex } from './sha256.js';
 
 /**
  * Compiled once at import, not per scan.
@@ -61,14 +62,43 @@ const AUTOMATON = buildAutomaton(PREFILTER_LITERALS);
  * "slow" and "crashed" are the same outcome to them. Everything below is a
  * ceiling that trades completeness for never hanging the page.
  */
-const MAX_SCAN_BYTES = 2_000_000;   // beyond this we scan a prefix and say so
+const MAX_SCAN_BYTES = 2_000_000;   // total bytes examined on a huge input
 const MAX_MATCHES_PER_RULE = 500;   // a pathological input cannot spin forever
 const MAX_TOTAL_FINDINGS = 2000;
-// Name and address detection walks every token, so it costs more per byte than
-// the pattern rules. Past this size the marginal value is low (a 300 KB paste
-// is a data dump, which the table detector already characterises) and the
-// latency is not worth it.
-const MAX_NER_BYTES = 200_000;
+
+/**
+ * Where those two million bytes are spent.
+ *
+ * The old behaviour was to take a prefix, which is the worst possible choice:
+ * an .env dump, a key block or a signature is at the *end* of a file far more
+ * often than in the middle of it, and "scanned the first 2 MB" reliably misses
+ * exactly the part that matters. A head and a tail catch both ends of a large
+ * paste, and what falls between them is reported by size rather than passed
+ * over.
+ *
+ * The two windows are joined by a run of newlines wide enough that no
+ * detector can match across the seam, and any finding that touches it is
+ * discarded rather than reported at a fabricated offset.
+ */
+const HEAD_BYTES = 1_400_000;
+const TAIL_BYTES = 600_000;
+const SEAM_LINES = 8;
+const SEAM = '\n'.repeat(SEAM_LINES);
+/** Past this, counting the newlines in the skipped middle is not worth it. */
+const MAX_LINE_COUNT_BYTES = 32_000_000;
+
+/**
+ * Name and address detection walks every token, so it costs more per byte than
+ * the pattern rules — around 4 MB/s against 9 for the rule pass.
+ *
+ * This was 200 KB, chosen when NER was slower and before documents were read
+ * at all. A 400-row spreadsheet exported as CSV clears 200 KB easily and is
+ * precisely the case where person names matter most, so the ceiling was
+ * cutting off the useful cases rather than the pathological ones. At 800 KB
+ * the worst case is roughly 200 ms, on an action the person took deliberately
+ * by pasting most of a megabyte.
+ */
+const MAX_NER_BYTES = 800_000;
 
 const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
 const CONFIDENCE_RANK = { certain: 3, likely: 2, possible: 1 };
@@ -82,6 +112,12 @@ export const DEFAULT_POLICY = {
   disabled: [],
   /** Literal strings that are never a finding, e.g. a shared test fixture. */
   allow: [],
+  /**
+   * Per-install random string mixed into every fingerprint. The extension
+   * generates one on first run; the CLI leaves it empty so digests are
+   * reproducible across machines. See fingerprint().
+   */
+  fingerprintSalt: '',
 };
 
 /** Masked form: enough to recognise your own key, not enough to use it. */
@@ -92,21 +128,78 @@ export function mask(value) {
   return `${s.slice(0, keep)}${'*'.repeat(Math.min(12, s.length - keep * 2))}${s.slice(-keep)}`;
 }
 
-/** Stable non-reversible id for a value. FNV-1a, 32-bit, hex. */
-export function fingerprint(value) {
-  let h = 0x811c9dc5;
-  const s = String(value);
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h.toString(16).padStart(8, '0');
+/**
+ * A stable id for a value, for dedupe and for anything a fork might log.
+ *
+ * SHA-256 truncated to 128 bits, over a salt and the value. It replaced a
+ * 32-bit FNV-1a hash that the documentation called "one-way": four billion
+ * outputs is a table anyone can build, and a chosen collision was trivial.
+ *
+ * The salt is what makes this non-reversible *in practice*, and it matters
+ * more than the hash upgrade did. An email address has perhaps 30 bits of
+ * real entropy; an unsalted digest of one is recovered by trying candidates,
+ * no matter how strong the hash. With a per-install random salt there is no
+ * shared table to build and no cross-install correlation — a fingerprint is
+ * only comparable to other fingerprints from the same browser profile.
+ *
+ * The CLI leaves the salt empty on purpose: a build pipeline wants the same
+ * value to fingerprint the same way on every machine. That is a deliberate
+ * trade, and it is written down in docs/LIMITATIONS.md rather than implied.
+ *
+ * @param {string} value
+ * @param {string} [salt] per-install random string; '' for a portable digest
+ */
+export function fingerprint(value, salt = '') {
+  return sha256hex(`${salt}\u0000${value}`).slice(0, 32);
 }
 
-function line(text, index) {
-  let n = 1;
-  for (let i = 0; i < index && i < text.length; i++) if (text[i] === '\n') n++;
+/**
+ * Line numbers for a whole scan, in one pass.
+ *
+ * The previous version walked the text from position zero for every finding.
+ * That is O(n) per finding and O(n\u00b7f) for a scan, which went unnoticed while
+ * the largest realistic input was a pasted paragraph. On a 200 KB document
+ * producing two thousand findings it was 73% of the entire scan — measured,
+ * with --cpu-prof, not guessed. Collecting the newline offsets once and
+ * binary-searching per finding makes it O(n + f log n).
+ */
+function lineIndex(text) {
+  const offsets = [];
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) offsets.push(i);
+  return offsets;
+}
+
+function lineAt(offsets, index) {
+  let lo = 0;
+  let hi = offsets.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (offsets[mid] < index) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo + 1;
+}
+
+/** Newlines in [from, to), for restoring line numbers across a skipped middle. */
+function countLines(text, from, to) {
+  let n = 0;
+  for (let i = from; i < to; i++) if (text.charCodeAt(i) === 10) n++;
   return n;
+}
+
+/**
+ * Moves a finding from the joined head+tail text back onto the original input.
+ * Returns null for a finding that straddles the seam, which is a match that
+ * never existed in the real document.
+ */
+function toOriginal(f, coverage) {
+  if (!coverage) return f;
+  if (f.end <= coverage.seamStart) return f;
+  if (f.start < coverage.seamEnd) return null;
+  const out = { ...f, start: f.start + coverage.shift, end: f.end + coverage.shift };
+  if (coverage.skippedLines === null) out.line = null;
+  else out.line = f.line - SEAM_LINES + coverage.skippedLines;
+  return out;
 }
 
 /**
@@ -137,19 +230,42 @@ export function scan(input, policy = {}) {
   const p = { ...DEFAULT_POLICY, ...policy };
   const disabled = new Set(p.disabled);
   const allow = new Set(p.allow);
+  const salt = p.fingerprintSalt || '';
+  const fp = (v) => fingerprint(v, salt);
   const raw = [];
 
   if (typeof input !== 'string' || input.length === 0) {
     return {
-      findings: [], counts: {}, verdict: 'clean', scanned: 0, truncated: false,
-      table: null, risk: exposureScore([], null), regimes: [], regimeNames: [],
-      advisories: [], errors: [],
+      findings: [], groups: [], counts: {}, verdict: 'clean', scanned: 0,
+      truncated: false, coverage: null, table: null, risk: exposureScore([], null),
+      regimes: [], regimeNames: [], advisories: [], errors: [],
     };
   }
 
   const truncated = input.length > MAX_SCAN_BYTES;
-  const text = truncated ? input.slice(0, MAX_SCAN_BYTES) : input;
+  let text = input;
+  let coverage = null;
+  if (truncated) {
+    text = input.slice(0, HEAD_BYTES) + SEAM + input.slice(input.length - TAIL_BYTES);
+    const skipped = input.length - HEAD_BYTES - TAIL_BYTES;
+    coverage = {
+      total: input.length,
+      head: HEAD_BYTES,
+      tail: TAIL_BYTES,
+      skipped,
+      // Offset from a position in the joined text to the same position in the
+      // original, for anything after the seam.
+      shift: skipped - SEAM.length,
+      seamStart: HEAD_BYTES,
+      seamEnd: HEAD_BYTES + SEAM.length,
+      skippedLines: skipped <= MAX_LINE_COUNT_BYTES
+        ? countLines(input, HEAD_BYTES, input.length - TAIL_BYTES)
+        : null,
+    };
+  }
   const errors = [];
+  const lines = lineIndex(text);
+  const line = (index) => lineAt(lines, index);
 
   // One pass answers every gating question at once: which prefilter literals
   // are present, and the longest digit, uppercase and alphanumeric runs.
@@ -220,8 +336,8 @@ export function scan(input, policy = {}) {
           end,
           match: value,
           preview: rule.advisory ? value.slice(0, 64) : mask(value),
-          fingerprint: fingerprint(value),
-          line: line(text, start),
+          fingerprint: fp(value),
+          line: line(start),
         });
       }
     } catch (err) {
@@ -247,7 +363,7 @@ export function scan(input, policy = {}) {
           start: 0, end: Math.min(text.length, 64),
           match: text.slice(0, 64),
           preview: inj.signals.map((sig) => sig.id).join(', '),
-          fingerprint: fingerprint(inj.signals.map((sig) => sig.id).join(',')),
+          fingerprint: fp(inj.signals.map((sig) => sig.id).join(',')),
           line: 1,
         });
       }
@@ -268,17 +384,23 @@ export function scan(input, policy = {}) {
       // the credential, not a person.
       const alreadyFound = raw.map((f) => ({ start: f.start, end: f.end }));
       const addresses = findAddresses(text);
+      // The same ceiling the rule pass obeys. A 700 KB customer export finds
+      // thousands of names, and past a couple of thousand the reader learns
+      // nothing further while resolveOverlaps starts costing real time.
+      const room = () => raw.length < MAX_TOTAL_FINDINGS;
       for (const a of addresses) {
+        if (!room()) break;
         raw.push({
           ruleId: 'postal_address', label: 'Postal address',
           severity: 'high', confidence: a.parts >= 3 ? 'likely' : 'possible',
           note: `Structural match: ${a.evidence.join(', ')}.`,
           advisory: false, audience: 'everyone',
           start: a.start, end: a.end, match: a.text,
-          preview: mask(a.text), fingerprint: fingerprint(a.text), line: line(text, a.start),
+          preview: mask(a.text), fingerprint: fp(a.text), line: line(a.start),
         });
       }
       for (const n of findNames(text, { claimed: [...addresses, ...alreadyFound] })) {
+        if (!room()) break;
         raw.push({
           ruleId: 'person_name', label: 'Person name',
           severity: 'medium',
@@ -286,7 +408,7 @@ export function scan(input, policy = {}) {
           note: n.evidence.length ? `Read as a name from: ${n.evidence.join(', ')}.` : null,
           advisory: false, audience: 'everyone',
           start: n.start, end: n.end, match: n.text,
-          preview: mask(n.text), fingerprint: fingerprint(n.text), line: line(text, n.start),
+          preview: mask(n.text), fingerprint: fp(n.text), line: line(n.start),
         });
       }
     } catch (err) {
@@ -294,7 +416,9 @@ export function scan(input, policy = {}) {
     }
   }
 
-  const findings = resolveOverlaps(raw);
+  const findings = resolveOverlaps(raw)
+    .map((f) => toOriginal(f, coverage))
+    .filter(Boolean);
   const counts = {};
   for (const f of findings) counts[f.severity] = (counts[f.severity] || 0) + 1;
 
@@ -355,8 +479,8 @@ export function scan(input, policy = {}) {
           advisory: false,
           audience: 'everyone',
           start: cell.start, end: cell.end, match: cell.value,
-          preview: mask(cell.value), fingerprint: fingerprint(cell.value),
-          line: line(text, cell.start),
+          preview: mask(cell.value), fingerprint: fp(cell.value),
+          line: line(cell.start),
         });
       }
       findings.sort((a, b) => a.start - b.start);
@@ -383,8 +507,9 @@ export function scan(input, policy = {}) {
     advisories: findings.filter((f) => f.advisory),
     counts,
     verdict,
-    scanned: text.length,
+    scanned: coverage ? coverage.head + coverage.tail : text.length,
     truncated,
+    coverage,
     table,
     risk,
     band: BAND_TEXT[risk.band],

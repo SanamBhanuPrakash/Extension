@@ -68,9 +68,55 @@ const HARNESS = `<!doctype html><html><head><meta charset="utf-8">
 
 const fixtures = join(root, '..', 'test', 'fixtures');
 
+/**
+ * The two places a composer hides from a naive content script.
+ *
+ * Left: a <textarea> inside an open shadow root. A paste event crossing that
+ * boundary is retargeted, so `e.target` is the host <div> and every
+ * editability test fails on it.
+ *
+ * Right: a composer inside an iframe. A top-frame-only script never sees it.
+ * The manifest's all_frames does the real work here; the harness injects
+ * content.js into the frame to stand in for that.
+ */
+const SHADOW = `<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="/panel.css">
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;background:#0d1117;font:14px/1.6 ui-sans-serif,system-ui;color:#c9d1d9;padding:24px}
+  h2{font-size:13px;color:#8b949e;font-weight:590;margin:0 0 8px}
+  .box{width:min(620px,92vw);background:#161b22;border:1px solid #30363d;border-radius:14px;padding:12px 14px;margin-bottom:22px}
+  textarea{width:100%;min-height:64px;background:transparent;border:0;outline:0;color:inherit;
+           font:14px/1.6 ui-sans-serif,system-ui;resize:none}
+  iframe{width:min(620px,92vw);height:120px;border:1px solid #30363d;border-radius:14px;background:#161b22}
+</style></head><body>
+<h2>composer inside an open shadow root</h2>
+<div id="host"></div>
+<h2>composer inside an iframe</h2>
+<iframe id="frame" src="/frame.html"></iframe>
+<script>
+  const root = document.getElementById('host').attachShadow({ mode: 'open' });
+  root.innerHTML = '<div class="box"><textarea id="s" placeholder="Message…"></textarea></div>';
+  window.__SHADOW_INPUT__ = root.getElementById('s');
+</script>
+<script src="/content.js"></script></body></html>`;
+
+const FRAME = `<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="/panel.css">
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;background:#161b22;font:14px/1.6 ui-sans-serif,system-ui;color:#c9d1d9;padding:12px}
+  textarea{width:100%;min-height:72px;background:transparent;border:0;outline:0;color:inherit;
+           font:14px/1.6 ui-sans-serif,system-ui;resize:none}
+</style></head><body>
+<textarea id="c" placeholder="Message…"></textarea>
+<script src="/content.js"></script></body></html>`;
+
 const server = createServer((req, res) => {
   const url = req.url.split('?')[0];
   if (url === '/harness.html') { res.writeHead(200, {'content-type':'text/html'}); return res.end(HARNESS); }
+  if (url === '/shadow.html') { res.writeHead(200, {'content-type':'text/html'}); return res.end(SHADOW); }
+  if (url === '/frame.html') { res.writeHead(200, {'content-type':'text/html'}); return res.end(FRAME); }
   // Real fixture bytes, so the attachment path is exercised with a real ZIP
   // container and a real JPEG rather than a string pretending to be one.
   if (url.startsWith('/fixtures/')) {
@@ -220,6 +266,49 @@ await shot('panel-image', 'harness.html', 900, true, fireDrop(['photo.jpg']));
 await shot('panel-sheet', 'harness.html', 900, true, fireDrop(['employees.xlsx', 'screenshot.png']));
 await shot('options-dark', 'options.html', 800, true, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
 await shot('options-light', 'options.html', 800, false, async (p) => { await p.click('#loadSample'); await p.waitForTimeout(300); });
+
+// ── coverage: shadow DOM and iframes ────────────────────────────────────
+{
+  const page = await browser.newPage({ viewport: { width: 760, height: 560 }, colorScheme: 'dark' });
+  const errs = [];
+  page.on('pageerror', (e) => errs.push(e.message));
+  await page.addInitScript(stub);
+  await page.goto('http://127.0.0.1:8731/shadow.html');
+  await page.waitForTimeout(1100);
+
+  // Paste into the shadow-root composer. The event is retargeted at the
+  // boundary, so this only works if the handler reads composedPath().
+  await page.evaluate((text) => {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', text);
+    window.__SHADOW_INPUT__.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true, composed: true }));
+  }, LEAK);
+  const shadowCaught = await page.waitForSelector('.chhanni-panel', { timeout: 6000 })
+    .then(() => true).catch(() => false);
+  console.log('\n--- coverage ---');
+  console.log('shadow-root composer:', shadowCaught ? 'caught' : 'MISSED');
+  if (shadowCaught) {
+    await page.screenshot({ path: '/tmp/claude-0/panel-shadow.png' });
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+  }
+
+  // Paste inside the iframe. all_frames is what puts the script here; the
+  // harness injects it, and the frame gate decides whether it wakes up.
+  const frame = page.frames().find((f) => f.url().endsWith('/frame.html'));
+  await frame.evaluate((text) => {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', text);
+    document.getElementById('c').dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, LEAK);
+  const frameCaught = await frame.waitForSelector('.chhanni-panel', { timeout: 6000 })
+    .then(() => true).catch(() => false);
+  console.log('iframe composer:     ', frameCaught ? 'caught' : 'MISSED');
+  if (errs.length) console.log('page errors:', errs.join(' | '));
+  await page.close();
+}
 
 // End-to-end: does "Redact and continue" actually clean the composer?
 const page = await browser.newPage({ viewport:{width:900,height:820} });

@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Chhanni \u2014 sieve your prompts",
+  "name": "Chhanni — sieve your prompts",
   "version": "0.1.0",
   "description": "Catches API keys, credentials and personal data in your prompt before it leaves your browser. Nothing is ever sent anywhere.",
   "permissions": [
@@ -64,7 +64,9 @@
       "css": [
         "panel.css"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
     }
   ],
   "web_accessible_resources": [
