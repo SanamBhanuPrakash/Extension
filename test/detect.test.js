@@ -521,7 +521,112 @@ test('table detection is bounded on a very wide, very long export', () => {
   const started = Date.now();
   const r = scan(big);
   assert.ok(Date.now() - started < 5000, 'wide+long export must not hang');
-  assert.ok(r.findings.length <= 2000, 'finding count is capped');
+  assert.equal(r.table.rows, 5000);
+});
+
+// ───────────────────────────────────────── what redaction actually replaces
+//
+// The gap these tests exist for: a panel that says "6,000 records — name,
+// email, phone, PAN and compensation" and a redact button that replaced the
+// names and left every other column in place. Detected, inspected, redacted
+// and prevented are four different guarantees, and this is the seam between
+// the second and the third.
+
+const bulkExport = (rows) => [
+  'customer_id,name,email,phone,pan,salary',
+  ...Array.from({ length: rows }, (_, i) =>
+    `${9000 + i},Customer Name${i},c${i}@northwind.co.in,`
+    + `9${String(812345670 + i).padStart(9, '0')},`
+    + `ABCPD${String(1000 + (i % 9000)).padStart(4, '0')}E,${700000 + i}`),
+].join('\n');
+
+test('every personal column in a bulk export is redactable, not just the first', () => {
+  const csv = bulkExport(6000);
+  const r = scan(csv);
+
+  // All five columns are recognised...
+  assert.deepEqual(
+    r.table.personalColumns.map((c) => c.kind).sort(),
+    ['email', 'name', 'pan', 'phone', 'salary'],
+  );
+  // ...and every value in every one of them produces a finding. The loops
+  // used to be nested column-first, so the budget was spent entirely on
+  // column one: 1,200 spans, all names, and not one email or phone number.
+  assert.equal(r.table.rows, 6000);
+  assert.equal(r.table.personalValues, 30000);
+  assert.equal(r.table.fullyRedactable, true);
+
+  const byRule = {};
+  for (const f of r.findings) byRule[f.ruleId] = (byRule[f.ruleId] || 0) + 1;
+  for (const id of ['person_name', 'email', 'phone_india', 'pan_india', 'compensation_data']) {
+    assert.equal(byRule[id], 6000, `${id} should cover every row`);
+  }
+});
+
+test('redacting a bulk export leaves nothing behind, in reasonable time', () => {
+  const csv = bulkExport(6000);
+  const r = scan(csv);
+  const started = Date.now();
+  const out = redact(csv, r.findings).text;
+  assert.ok(Date.now() - started < 3000, 'redaction must not take seconds');
+
+  for (const [what, re] of [
+    ['email addresses', /@northwind\.co\.in/g],
+    ['phone numbers', /\b9[0-9]{9}\b/g],
+    ['PANs', /\bABCPD[0-9]{4}E\b/g],
+    ['names', /Customer Name[0-9]+/g],
+  ]) {
+    assert.equal((out.match(re) || []).length, 0, `${what} must all be gone`);
+  }
+  // And the row is still a row, with a placeholder that says what it replaced.
+  assert.equal(
+    out.split('\n')[1],
+    '9000,<PERSON_NAME_1>,<EMAIL_1>,<PHONE_INDIA_1>,<PAN_INDIA_1>,<COMPENSATION_DATA_1>',
+  );
+});
+
+test('when a table is too large to fully redact, the result says so', () => {
+  // Past MAX_ROWS_PROCESSED the rows are counted but never split into cells,
+  // so their values cannot be replaced. The count stays true and
+  // `fullyRedactable` goes false — which is what the panel reads.
+  const csv = bulkExport(24000);
+  const r = scan(csv, { ner: false });
+  assert.equal(r.table.rows, 24000);
+  assert.ok(r.table.unprocessedRows > 0);
+  assert.equal(r.table.fullyRedactable, false);
+  assert.ok(r.table.redactableValues < r.table.personalValues);
+});
+
+test('overlap resolution is bucketed, and identical to the quadratic version', () => {
+  // The bucket index is an optimisation, and an optimisation that changes a
+  // result is a bug. This compares it against the obvious implementation on
+  // an input built to make spans collide.
+  const quadratic = (findings) => {
+    const rank = { critical: 4, high: 3, medium: 2, low: 1 };
+    const conf = { certain: 3, likely: 2, possible: 1 };
+    const ordered = [...findings].sort((a, b) =>
+      (rank[b.severity] - rank[a.severity])
+      || (conf[b.confidence] - conf[a.confidence])
+      || ((b.end - b.start) - (a.end - a.start))
+      || (a.start - b.start));
+    const kept = [];
+    for (const f of ordered) {
+      if (!kept.some((k) => f.start < k.end && k.start < f.end)) kept.push(f);
+    }
+    return kept.sort((a, b) => a.start - b.start).map((f) => `${f.start}:${f.end}:${f.ruleId}`);
+  };
+
+  const text = [
+    'AWS_ACCESS_KEY_ID=' + ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join(''),
+    'api_key=sk-ant-api03-' + 'x'.repeat(40),
+    'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc',
+    'card 4242 4242 4242 4242, PAN ABCPD1234E, IBAN GB82WEST12345698765432',
+    'Spoke to Priya Nair at Flat 3B, 14 Koregaon Park Road, Pune 411001.',
+  ].join('\n');
+  const r = scan(text);
+  const mine = r.findings.map((f) => `${f.start}:${f.end}:${f.ruleId}`);
+  assert.deepEqual(mine, quadratic(r.findings));
+  assert.ok(mine.length > 5, 'the sample has to actually produce findings');
 });
 
 // ═══════════════════════════════════════════ names and addresses in prose

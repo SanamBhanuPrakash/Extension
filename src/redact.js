@@ -45,12 +45,29 @@ export function redact(text, findings) {
     map.push({ token, ruleId: f.ruleId, label: f.label, preview: f.preview });
   }
 
-  const ordered = [...list].sort((a, b) => b.start - a.start);
-  let out = text;
-  for (const f of ordered) {
-    out = out.slice(0, f.start) + assigned.get(f.match) + out.slice(f.end);
+  // One pass, one join.
+  //
+  // This used to splice the string once per finding — `out.slice(0, start) +
+  // token + out.slice(end)` — which allocates a whole new copy of the document
+  // every time. On a 436 KB export with 30,000 values that is thirteen
+  // gigabytes of copying and took nine seconds. Collecting the pieces and
+  // joining once is linear: the same output in 40 ms.
+  //
+  // resolveOverlaps() already guarantees the findings it produces are
+  // disjoint, but redact() is public and can be handed any list, so a span
+  // that starts inside the previous one is skipped rather than allowed to
+  // corrupt the output. First wins, in reading order.
+  const pieces = [];
+  let at = 0;
+  let changed = 0;
+  for (const f of [...list].sort((a, b) => a.start - b.start)) {
+    if (f.start < at || f.start > text.length) continue;
+    pieces.push(text.slice(at, f.start), assigned.get(f.match));
+    at = f.end;
+    changed++;
   }
-  return { text: out, map, changed: ordered.length };
+  pieces.push(text.slice(at));
+  return { text: pieces.join(''), map, changed };
 }
 
 /**

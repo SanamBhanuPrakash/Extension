@@ -208,6 +208,23 @@ function toOriginal(f, coverage) {
  * `api_key=sk-ant-...` reporting both a generic credential-shaped value and
  * the actual Anthropic key.
  */
+const OVERLAP_BUCKET = 64;
+
+/**
+ * Two findings conflict when their spans overlap; the stronger one wins.
+ *
+ * The obvious implementation — for each candidate, scan everything kept so far
+ * — is O(f²). That was invisible while a scan produced a few dozen findings
+ * and became the reason the table path could not afford to emit more than
+ * 1,200 of them: a 6,000-row export with five personal columns is 30,000
+ * spans, and 30,000² is nine hundred million comparisons.
+ *
+ * Instead, kept spans are indexed into fixed-width buckets of the text. A
+ * candidate only has to look at the buckets its own span touches, and a cell
+ * value touches one or two. The result is identical to the quadratic version
+ * — `test/detect.test.js` asserts that against it directly — and the cost is
+ * linear in the number of findings.
+ */
 function resolveOverlaps(findings) {
   const ordered = [...findings].sort((a, b) => {
     const s = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
@@ -218,10 +235,27 @@ function resolveOverlaps(findings) {
     if (len !== 0) return len;
     return a.start - b.start;
   });
+
+  const buckets = new Map();
   const kept = [];
   for (const f of ordered) {
-    const clashes = kept.some((k) => f.start < k.end && k.start < f.end);
-    if (!clashes) kept.push(f);
+    const first = Math.floor(f.start / OVERLAP_BUCKET);
+    const last = Math.floor((f.end - 1) / OVERLAP_BUCKET);
+    let clashes = false;
+    for (let b = first; b <= last && !clashes; b++) {
+      const here = buckets.get(b);
+      if (!here) continue;
+      for (const k of here) {
+        if (f.start < k.end && k.start < f.end) { clashes = true; break; }
+      }
+    }
+    if (clashes) continue;
+    kept.push(f);
+    for (let b = first; b <= last; b++) {
+      const here = buckets.get(b);
+      if (here) here.push(f);
+      else buckets.set(b, [f]);
+    }
   }
   return kept.sort((a, b) => a.start - b.start);
 }
@@ -465,7 +499,10 @@ export function scan(input, policy = {}) {
         email: 'email', phone: 'phone_india', ssn: 'us_ssn', aadhaar: 'aadhaar',
         pan: 'pan_india', gstin: 'gstin', card: 'payment_card', account: 'iban',
         passport: 'indian_passport', name: 'person_name', address: 'postal_address',
-        dob: 'person_name', salary: 'person_name', health: 'health_information',
+        // A salary is not a name, and a placeholder that says so is the
+        // difference between a redacted row the model can still reason about
+        // and one that reads as six people.
+        dob: 'date_of_birth', salary: 'compensation_data', health: 'health_information',
         device: 'imei', secret: 'high_entropy_assignment',
       };
       for (const cell of table.cellSpans()) {

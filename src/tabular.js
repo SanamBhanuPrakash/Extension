@@ -97,7 +97,23 @@ const clean = (s) => s.trim().replace(/^["']|["']$/g, '');
  * still the true one — it is counted cheaply, without splitting — because the
  * count is the finding.
  */
-const MAX_ROWS_PROCESSED = 2000;
+/**
+ * How many rows are parsed into cells, and how many values can be handed back
+ * for replacement.
+ *
+ * Both used to be far lower, because resolving overlaps between findings was
+ * quadratic and thirty thousand spans meant nine hundred million comparisons.
+ * That is now bucketed and linear (see resolveOverlaps in detect.js), so the
+ * ceiling is set by what a person can actually paste rather than by an
+ * accident of the algorithm.
+ *
+ * A row beyond the processing cap is still *counted* — a cheap delimiter tally
+ * — so the disclosure is reported at its true size even when its values cannot
+ * all be replaced. Those two numbers are different, and telling them apart is
+ * the whole point of `redactable` below.
+ */
+const MAX_ROWS_PROCESSED = 20000;
+const MAX_CELL_SPANS = 60000;
 
 /**
  * Finds the delimiter that produces the most consistent column count across
@@ -238,28 +254,74 @@ export function detectTable(text, probe) {
    * phone numbers because the column says so — read alone, each one is just
    * ten digits, and the value-level rule correctly refuses to guess.
    */
-  function cellSpans(limit = 1200) {
+  /**
+   * Row by row, not column by column.
+   *
+   * The loops used to be nested the other way: every value in the first
+   * personal column, then the second, and so on until the budget ran out. On
+   * a 6,000-row export with five personal columns that meant the budget was
+   * entirely consumed by column one — measured: 1,200 spans, all of them
+   * names, and not a single email, phone number, PAN or salary. The panel
+   * said "6,000 records — person name, email address, phone number, pan and
+   * compensation", the person pressed redact, and 6,000 phone numbers went
+   * out anyway.
+   *
+   * Walking rows first means a budget that does bind truncates the table at
+   * some row rather than silently dropping four of its five columns. The
+   * caller is told how many it got and how many exist.
+   */
+  function cellSpans(limit = MAX_CELL_SPANS) {
     const out = [];
-    for (const col of personalColumns) {
-      for (let r = 0; r < bodyRows.length && out.length < limit; r++) {
+    let available = 0;
+    let truncated = false;
+    for (let r = 0; r < bodyRows.length; r++) {
+      const lineStart = bodyRows[r].start;
+      for (const col of personalColumns) {
         const raw = bodyRows[r].cells[col.index];
         if (!raw) continue;
         const value = clean(raw);
         if (!value || value.length < 3) continue;
-        const lineStart = bodyRows[r].start;
         if (lineStart === undefined || lineStart < 0) continue;
         const within = bodyRows[r].line.indexOf(value);
         if (within < 0) continue;
-        out.push({ start: lineStart + within, end: lineStart + within + value.length, value, kind: col.kind, label: col.label });
+        available++;
+        if (out.length >= limit) { truncated = true; continue; }
+        out.push({
+          start: lineStart + within,
+          end: lineStart + within + value.length,
+          value, kind: col.kind, label: col.label,
+        });
       }
     }
+    out.available = available;
+    out.truncated = truncated;
     return out;
   }
+
+  // Counted once, so `scan()` can say what it will and will not replace
+  // without having to materialise the spans twice.
+  let redactableValues = 0;
+  let personalValues = 0;
+  for (let r = 0; r < bodyRows.length; r++) {
+    for (const col of personalColumns) {
+      const raw = bodyRows[r].cells[col.index];
+      if (raw && clean(raw).length >= 3) personalValues++;
+    }
+  }
+  redactableValues = Math.min(personalValues, MAX_CELL_SPANS);
+  // Rows past the processing cap were counted but never split into cells, so
+  // their values are not reachable at all.
+  const unprocessedRows = Math.max(0, (header ? totalRows - 1 : totalRows) - body.length);
 
   return {
     // The true row count, including rows past the processing cap.
     rows: header ? totalRows - 1 : totalRows,
     processedRows: body.length,
+    unprocessedRows,
+    personalValues,
+    redactableValues,
+    /** False when the panel must not promise to replace everything it found. */
+    fullyRedactable: unprocessedRows === 0 && redactableValues === personalValues,
     cols: shape.cols,
     cellSpans,
     delimiterName: isMarkdown ? 'markdown table' : shape.name,
@@ -286,6 +348,12 @@ export function describeTable(table) {
   const noun = table.rows >= 20 ? 'records' : 'rows';
   const shape = table.delimiterName === 'markdown table'
     ? 'a markdown table' : `${table.delimiterName} values`;
-  return `${table.rows.toLocaleString()} ${noun} of personal data — ${list} — as ${shape}. ` +
-    `This is a bulk disclosure, not a single value.`;
+  const head = `${table.rows.toLocaleString()} ${noun} of personal data — ${list} — as ${shape}. `
+    + 'This is a bulk disclosure, not a single value.';
+  // Detected and redactable are different numbers, and when they differ the
+  // person has to be told before they press a button labelled "redact".
+  if (table.fullyRedactable !== false) return head;
+  return `${head} Chhanni can replace ${table.redactableValues.toLocaleString()} `
+    + `of the ${table.personalValues.toLocaleString()} values it can reach; this table is `
+    + 'larger than it reads in one pass, so the rest would go as they are.';
 }

@@ -52,6 +52,7 @@ export const REGIME_MAP = {
   indian_dl: [D('S. 2(t)', 'personal data')],
 
   person_name: [G('Art. 4(1)', 'personal data'), D('S. 2(t)', 'personal data')],
+  date_of_birth: [G('Art. 4(1)', 'personal data'), D('S. 2(t)', 'personal data')],
   postal_address: [G('Art. 4(1)', 'personal data'), D('S. 2(t)', 'personal data')],
 
   // Payment
