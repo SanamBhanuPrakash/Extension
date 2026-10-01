@@ -165,7 +165,18 @@ export async function extractDocument(bytes, filename = '') {
       reason: `Chhanni does not read ${name}s.`,
     };
   } catch (err) {
-    return { ...base, status: 'opaque', reason: `This file could not be read (${String(err && err.message).slice(0, 80)}).` };
+    // The catch that keeps a malformed attachment from taking the page down
+    // with it — and, for a long time, the catch that hid a TypeError on every
+    // single .xlsx behind the words "could not be read". A caught crash and a
+    // file that genuinely has nothing in it produce the same status on
+    // purpose, because the person does not care which; `error` is how
+    // everything else tells them apart. bench/fuzz.js fails on it.
+    return {
+      ...base,
+      status: 'opaque',
+      error: String((err && err.message) || err).slice(0, 200),
+      reason: `This file could not be read (${String(err && err.message).slice(0, 80)}).`,
+    };
   }
 }
 

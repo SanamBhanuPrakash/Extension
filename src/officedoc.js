@@ -14,7 +14,7 @@
  * untrusted document is a larger attack surface than a tag walk over text.
  * These files are adversarial input.
  */
-import { readCentralDirectory, readEntry, readText, looksLikeZip } from './zipreader.js';
+import { readCentralDirectory, readEntry, readText, looksLikeZip, archiveBudget } from './zipreader.js';
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
 
@@ -172,6 +172,9 @@ const MAX_SPREADSHEET_ROWS = 5000;
 export async function extractOfficeDocument(bytes, filename = '') {
   if (!looksLikeZip(bytes)) return null;
   const entries = readCentralDirectory(bytes);
+  // One allowance for the whole package. Without it, every part gets its own
+  // ceiling and four thousand parts get four thousand ceilings.
+  const budget = archiveBudget();
   if (!entries || !entries.length) return null;
 
   const has = (name) => entries.some((e) => e.name === name);
@@ -179,7 +182,7 @@ export async function extractOfficeDocument(bytes, filename = '') {
 
   // Document properties routinely carry a real person's name, an internal
   // path, and the software that produced the file.
-  const core = await readText(bytes, entries, 'docProps/core.xml');
+  const core = await readText(bytes, entries, 'docProps/core.xml', budget);
   if (core) {
     const grab = (tag) => textOf(core, tag)[0]?.trim();
     Object.assign(metadata, {
@@ -187,18 +190,18 @@ export async function extractOfficeDocument(bytes, filename = '') {
       lastModifiedBy: grab('lastModifiedBy'), subject: grab('subject'),
     });
   }
-  const app = await readText(bytes, entries, 'docProps/app.xml');
+  const app = await readText(bytes, entries, 'docProps/app.xml', budget);
   if (app) metadata.company = textOf(app, 'Company')[0]?.trim();
 
   // Word
   if (has('word/document.xml')) {
-    const xml = await readText(bytes, entries, 'word/document.xml');
+    const xml = await readText(bytes, entries, 'word/document.xml', budget);
     if (xml === null) return null;
     let text = extractDocx(xml);
     // Comments and footnotes are where the candid remarks live.
     for (const extra of ['word/comments.xml', 'word/footnotes.xml', 'word/endnotes.xml']) {
       if (!has(extra)) continue;
-      const more = await readText(bytes, entries, extra);
+      const more = await readText(bytes, entries, extra, budget);
       if (more) {
         const lines = textOf(more, 't').map((t) => t.trim()).filter(Boolean);
         if (lines.length) text += `\n\n${lines.join('\n')}`;
@@ -209,7 +212,7 @@ export async function extractOfficeDocument(bytes, filename = '') {
 
   // Excel
   if (has('xl/workbook.xml')) {
-    const sharedXml = await readText(bytes, entries, 'xl/sharedStrings.xml');
+    const sharedXml = await readText(bytes, entries, 'xl/sharedStrings.xml', budget);
     const sharedStrings = sharedXml
       ? chunksBetween(sharedXml, 'si').map((si) => decodeEntities(
           (si.match(/<(?:\w+:)?t\b[^>]*>([\s\S]*?)<\/(?:\w+:)?t>/g) || [])
@@ -221,13 +224,18 @@ export async function extractOfficeDocument(bytes, filename = '') {
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
     const blocks = [];
-    let budget = MAX_SPREADSHEET_ROWS;
+    // Rows left to emit, which is a different budget from the archive's
+    // decompression allowance and used to share its name. Passing a row count
+    // where a `{remaining}` object was expected made every spreadsheet read as
+    // `opaque`: assigning a property to a number primitive throws in a module,
+    // and the throw was swallowed as "could not be parsed".
+    let rowsLeft = MAX_SPREADSHEET_ROWS;
     for (const sheet of sheets) {
-      if (budget <= 0) break;
-      const xml = await readText(bytes, entries, sheet.name);
+      if (rowsLeft <= 0) break;
+      const xml = await readText(bytes, entries, sheet.name, budget);
       if (!xml) continue;
-      const lines = extractSheet(xml, sharedStrings, budget);
-      budget -= lines.length;
+      const lines = extractSheet(xml, sharedStrings, rowsLeft);
+      rowsLeft -= lines.length;
       if (lines.length) blocks.push(lines.join('\n'));
     }
     return { kind: 'spreadsheet', text: blocks.join('\n\n'), metadata, parts: sheets.length };
@@ -240,7 +248,7 @@ export async function extractOfficeDocument(bytes, filename = '') {
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
     const blocks = [];
     for (const slide of slides) {
-      const xml = await readText(bytes, entries, slide.name);
+      const xml = await readText(bytes, entries, slide.name, budget);
       if (!xml) continue;
       const lines = extractSlide(xml);
       if (lines.length) blocks.push(lines.join('\n'));
@@ -250,14 +258,14 @@ export async function extractOfficeDocument(bytes, filename = '') {
 
   // OpenDocument
   if (has('content.xml')) {
-    const xml = await readText(bytes, entries, 'content.xml');
+    const xml = await readText(bytes, entries, 'content.xml', budget);
     if (xml === null) return null;
-    const meta = await readText(bytes, entries, 'meta.xml');
+    const meta = await readText(bytes, entries, 'meta.xml', budget);
     if (meta) {
       metadata.author = metadata.author || textOf(meta, 'creator')[0]?.trim();
       metadata.title = metadata.title || textOf(meta, 'title')[0]?.trim();
     }
-    const mimetype = await readText(bytes, entries, 'mimetype');
+    const mimetype = await readText(bytes, entries, 'mimetype', budget);
     const kind = /spreadsheet/.test(mimetype || '') ? 'spreadsheet'
       : /presentation/.test(mimetype || '') ? 'presentation' : 'word';
     return { kind, text: extractOpenDocument(xml), metadata, parts: 1 };

@@ -21,9 +21,51 @@ const EOCD64_SIG = 0x06064b50;
 const CENTRAL_SIG = 0x02014b50;
 const LOCAL_SIG = 0x04034b50;
 
-/** Guards against a crafted archive claiming an absurd expansion. */
+/**
+ * Three ceilings, because one is not enough.
+ *
+ * `MAX_ENTRY_BYTES` bounds what a single part may *declare*. That is a cheap
+ * check and it is the only one a header can be trusted for, which is why it is
+ * also the weakest: a central directory saying `size = 1000` costs nothing to
+ * write and says nothing about what the deflate stream actually produces.
+ *
+ * `MAX_OUTPUT_BYTES` bounds what decompression is allowed to *emit*, measured
+ * as it arrives. That is the one a bomb runs into.
+ *
+ * `MAX_ARCHIVE_BYTES` bounds the sum across every entry in one file, because
+ * 4,096 entries of 32 MB each is 128 GB and none of them individually breaks a
+ * rule.
+ */
 const MAX_ENTRY_BYTES = 32 * 1024 * 1024;
+const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES = 96 * 1024 * 1024;
 const MAX_ENTRIES = 4096;
+
+/**
+ * A shared decompression allowance for one archive.
+ *
+ * Created per file by the caller and threaded through every `readEntry`, so
+ * the budget is spent across the whole document rather than reset per part.
+ */
+export function archiveBudget(bytes = MAX_ARCHIVE_BYTES) {
+  return { remaining: bytes };
+}
+
+/**
+ * A 64-bit field, or null when it is not a number this code can act on.
+ *
+ * `Number(getBigUint64(...))` silently loses precision above 2^53, so a
+ * crafted ZIP64 header could produce an offset that is *nearly* right and
+ * therefore lands somewhere unintended rather than being rejected. Anything
+ * past the safe integer range, or past the file itself, is not an offset into
+ * this file and is refused rather than approximated.
+ */
+function safeU64(view, at, limit) {
+  const raw = view.getBigUint64(at, true);
+  if (raw > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  const n = Number(raw);
+  return n >= 0 && n <= limit ? n : null;
+}
 
 /**
  * @param {Uint8Array} bytes
@@ -49,10 +91,12 @@ export function readCentralDirectory(bytes) {
   if (count === 0xffff || directoryOffset === 0xffffffff) {
     for (let i = eocd - 20; i >= 0 && i > eocd - 100; i--) {
       if (view.getUint32(i, true) === EOCD64_LOCATOR_SIG) {
-        const at = Number(view.getBigUint64(i + 8, true));
-        if (at >= 0 && at + 56 <= bytes.length && view.getUint32(at, true) === EOCD64_SIG) {
-          count = Number(view.getBigUint64(at + 32, true));
-          directoryOffset = Number(view.getBigUint64(at + 48, true));
+        const at = safeU64(view, i + 8, bytes.length);
+        if (at !== null && at + 56 <= bytes.length && view.getUint32(at, true) === EOCD64_SIG) {
+          const n = safeU64(view, at + 32, MAX_ENTRIES);
+          const offset = safeU64(view, at + 48, bytes.length);
+          if (n !== null) count = n;
+          if (offset !== null) directoryOffset = offset;
         }
         break;
       }
@@ -81,9 +125,12 @@ export function readCentralDirectory(bytes) {
         const dataSize = view.getUint16(ex + 2, true);
         if (headerId === 0x0001) {
           let p = ex + 4;
-          if (size === 0xffffffff) { size = Number(view.getBigUint64(p, true)); p += 8; }
-          if (compressedSize === 0xffffffff) { compressedSize = Number(view.getBigUint64(p, true)); p += 8; }
-          if (localOffset === 0xffffffff) { localOffset = Number(view.getBigUint64(p, true)); }
+          // A ZIP64 field that is out of range leaves the 32-bit sentinel in
+          // place, which every check downstream then rejects. Approximating it
+          // would be worse than not reading it.
+          if (size === 0xffffffff) { size = safeU64(view, p, MAX_ENTRY_BYTES) ?? size; p += 8; }
+          if (compressedSize === 0xffffffff) { compressedSize = safeU64(view, p, bytes.length) ?? compressedSize; p += 8; }
+          if (localOffset === 0xffffffff) { localOffset = safeU64(view, p, bytes.length) ?? localOffset; }
           break;
         }
         ex += 4 + dataSize;
@@ -96,9 +143,17 @@ export function readCentralDirectory(bytes) {
   return entries;
 }
 
-/** Inflates one entry. Returns its bytes, or null if it cannot be read. */
-export async function readEntry(bytes, entry) {
+/**
+ * Inflates one entry, refusing to produce more than it is allowed to.
+ *
+ * @param {Uint8Array} bytes the whole archive
+ * @param {object} entry from readCentralDirectory()
+ * @param {{remaining: number}} [budget] shared across the archive
+ * @returns {Promise<Uint8Array|null>}
+ */
+export async function readEntry(bytes, entry, budget = null) {
   if (!entry || entry.size > MAX_ENTRY_BYTES) return null;
+  if (budget && budget.remaining <= 0) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const at = entry.localOffset;
   if (at + 30 > bytes.length || view.getUint32(at, true) !== LOCAL_SIG) return null;
@@ -112,23 +167,64 @@ export async function readEntry(bytes, entry) {
   if (end > bytes.length) return null;
   const data = bytes.subarray(start, end);
 
-  if (entry.method === 0) return data;              // stored
+  if (entry.method === 0) {                         // stored
+    if (budget) {
+      if (data.length > budget.remaining) return null;
+      budget.remaining -= data.length;
+    }
+    return data;
+  }
   if (entry.method !== 8) return null;              // only deflate is worth supporting
 
+  const limit = Math.min(MAX_OUTPUT_BYTES, budget ? budget.remaining : MAX_OUTPUT_BYTES);
+  const out = await inflateBounded(data, 'deflate-raw', limit);
+  if (out && budget) budget.remaining -= out.length;
+  return out;
+}
+
+/**
+ * Decompression that stops when it has produced too much.
+ *
+ * `new Response(stream).arrayBuffer()` reads to completion, so the only thing
+ * standing between a crafted archive and an arbitrary allocation was a size
+ * field the archive wrote itself. Reading the stream chunk by chunk and
+ * cancelling past `limit` bounds the *actual* output, which is the number that
+ * matters.
+ */
+export async function inflateBounded(data, format, limit) {
+  let reader;
   try {
-    const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-    const out = new Uint8Array(await new Response(stream).arrayBuffer());
-    return out;
+    reader = new Blob([data]).stream().pipeThrough(new DecompressionStream(format)).getReader();
   } catch {
     return null;
   }
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > limit) {
+        try { await reader.cancel(); } catch { /* already closed */ }
+        return null;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return null;                                    // truncated or corrupt stream
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) { out.set(chunk, at); at += chunk.length; }
+  return out;
 }
 
 /** Convenience: read one named entry as text. */
-export async function readText(bytes, entries, name) {
+export async function readText(bytes, entries, name, budget = null) {
   const entry = entries.find((e) => e.name === name);
   if (!entry) return null;
-  const data = await readEntry(bytes, entry);
+  const data = await readEntry(bytes, entry, budget);
   return data ? new TextDecoder('utf-8').decode(data) : null;
 }
 

@@ -63,22 +63,38 @@ function readIfd(view, tiffStart, offset, le, tags, out, limit = 64) {
     const length = view.getUint32(at + 4, le);
     const size = (TYPE_SIZE[type] || 1) * length;
     const valueAt = size > 4 ? tiffStart + view.getUint32(at + 8, le) : at + 8;
-    if (valueAt < 0 || valueAt + Math.min(size, 4) > view.byteLength) continue;
 
-    if (tag === 0x8825) { nextPointer = tiffStart + view.getUint32(at + 8, le); continue; }
+    // Every read below is bounds-checked against the bytes it will actually
+    // touch, not against four of them.
+    //
+    // The old guard was `valueAt + Math.min(size, 4) <= byteLength`, which is
+    // the right check for an inline value and the wrong one for everything
+    // else: a string tag declaring 200 bytes was admitted on the strength of
+    // its first four and then read to the end. A truncated JPEG — which is
+    // what every half-downloaded photograph is — threw a RangeError out of
+    // here, 219 times in 60,000 fuzzed inputs.
+    const fits = (need) => valueAt >= 0 && valueAt + need <= view.byteLength;
+
+    if (tag === 0x8825) {
+      if (at + 12 <= view.byteLength) nextPointer = tiffStart + view.getUint32(at + 8, le);
+      continue;
+    }
     const name = tags[tag];
     if (!name) continue;
 
     if (type === 2) {
+      const want = Math.min(size, 200);
+      if (!fits(Math.min(want, 1))) continue;
       let s = '';
-      for (let k = 0; k < Math.min(size, 200); k++) {
+      for (let k = 0; k < want && valueAt + k < view.byteLength; k++) {
         const code = view.getUint8(valueAt + k);
         if (code === 0) break;
         s += String.fromCharCode(code);
       }
       if (s.trim()) out[name] = s.trim();
     } else if (type === 5 && length >= 3) {
-      // Rationals: degrees, minutes, seconds.
+      // Rationals: degrees, minutes, seconds. Three of them, eight bytes each.
+      if (!fits(24)) continue;
       const parts = [];
       for (let k = 0; k < 3; k++) {
         const num = view.getUint32(valueAt + k * 8, le);
@@ -87,8 +103,10 @@ function readIfd(view, tiffStart, offset, le, tags, out, limit = 64) {
       }
       out[name] = parts;
     } else if (type === 3) {
+      if (!fits(2)) continue;
       out[name] = view.getUint16(valueAt, le);
     } else if (type === 4) {
+      if (!fits(4)) continue;
       out[name] = view.getUint32(valueAt, le);
     }
   }
@@ -137,10 +155,18 @@ function parsePngText(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let at = 8;
   let guard = 0;
-  while (at + 8 < bytes.length && guard++ < 200) {
+  // Every chunk is length-prefixed, and the length is written by whoever made
+  // the file. `at + 8 < bytes.length` says the header is readable; it says
+  // nothing about the body, and the IHDR branch below used to read eight bytes
+  // past it on that basis alone. A PNG truncated mid-chunk — or one with a
+  // length field flipped by a single bit — threw out of here.
+  while (at + 8 <= bytes.length && guard++ < 200) {
     const length = view.getUint32(at, false);
     const type = latin1.decode(bytes.subarray(at + 4, at + 8));
     if (type === 'IEND') break;
+    // A chunk that runs off the end is where the file stops being readable.
+    if (length > bytes.length || at + 12 + length > bytes.length) break;
+
     if ((type === 'tEXt' || type === 'iTXt') && length < 20000) {
       const body = bytes.subarray(at + 8, at + 8 + length);
       const nul = body.indexOf(0);
@@ -150,7 +176,7 @@ function parsePngText(bytes) {
         if (key && value) out[key] = value.slice(0, 300);
       }
     }
-    if (type === 'IHDR' && length >= 8) {
+    if (type === 'IHDR' && length >= 8 && at + 16 <= bytes.length) {
       out.width = view.getUint32(at + 8, false);
       out.height = view.getUint32(at + 12, false);
     }
