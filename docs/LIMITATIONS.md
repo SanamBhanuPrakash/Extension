@@ -19,7 +19,59 @@ The one-line version:
 
 ---
 
+## 0. Four guarantees, and they are not the same guarantee
+
+Most of the mistakes this project has made were one of these four being
+mistaken for another. They are listed first because every section below is
+really about the gap between two of them.
+
+| | What it means | Where it stops |
+|---|---|---|
+| **Detected** | Something in the text matched, and the panel named it | A detector that does not exist, a format with no pattern, a semantic leak with no shape. § 2, § 3 |
+| **Inspected** | The whole artifact was read, not just the part the format is named after | No OCR. A package part with no extractor. Rows past a cap. A closed shadow root. § 1, § 4, § 5 |
+| **Redacted** | Every detected value was actually replaced in what gets sent | A cap that binds. A container that cannot be rewritten. A value detected in a part that the rewrite does not cover. § 1, § 13 |
+| **Prevented** | It did not reach the provider | Never. "Send as-is" always works, and the submission paths a site can use are not all interceptable. § 15 |
+
+Each one is strictly weaker than the one above it, and the interesting bugs
+live in the joins:
+
+- **Detected but not inspected.** A `.docx` whose body parsed while its header
+  — where the classification marking actually is — was never opened. The status
+  said `readable`. Fixed: packages now report which parts were read, and one
+  with anything genuinely unread is `partial`.
+- **Detected but not redacted.** The worst bug this project has had. The panel
+  said *"6,000 records — person name, email address, phone number, pan and
+  compensation"*, and redaction replaced 1,200 names and nothing else, because
+  the span budget was consumed entirely by the first column. Six thousand
+  phone numbers went out behind an accurate warning. Fixed, and the table
+  result now carries `fullyRedactable` so the panel cannot promise what it
+  will not deliver.
+- **Redacted but not prevented.** Always true, by design. See § 16.
+
+When reading anything else in this document, or anything the panel says, the
+question worth asking is which of the four is being claimed.
+
+---
+
 ## 1. Files
+
+### What a package part inventory does and does not cover
+
+Every text-bearing part of an OOXML or OpenDocument package is read: body,
+headers, footers, comments, footnotes, endnotes, speaker notes, slide masters
+and layouts, chart labels, SmartArt, and OpenDocument's `styles.xml`. A part
+with no bespoke extractor falls back to reading every text run, which is worse
+than a real parser and much better than not opening it.
+
+What is deliberately *not* reported as unread: `[Content_Types].xml`, the
+relationship files, `xl/workbook.xml` and `ppt/presentation.xml`. Those are
+scaffolding, and listing them would bury the one line that matters. The cost is
+a defined name in `xl/workbook.xml`, which occasionally holds a value and is
+not read.
+
+What is reported: embedded OLE objects, media, and any part with no extractor.
+A package with anything genuinely unread comes back `partial`, not `readable`,
+and names what it missed.
 
 ### What it reads now
 
@@ -213,8 +265,11 @@ handling depends on those libraries' behaviour continuing to be what it is.
 | Matches per rule | 500 | A pathological input cannot spin. |
 | Findings per scan | 2,000 | Past this the reader learns nothing further. |
 | Name/address pass | 800 KB | A larger paste gets credential and pattern scanning without the prose pass. |
-| Table rows | 2,000 processed, 5,000 read | Column inference is from a sample; an unusual value late in a very large table may not be represented. |
-| Response tail | 12,000 characters | Only the most recent stretch of the transcript. |
+| Table rows | 20,000 processed | Rows past it are counted, so the disclosure is reported at its true size, but their values cannot be replaced. `fullyRedactable` goes false and the panel says so. |
+| Table cell spans | 60,000 | Walked row by row, so a budget that binds truncates the table rather than dropping whole columns. |
+| Response window | 24,000 characters per pass | Scanned forward from the last mark rather than as a fixed tail, so a long reply cannot push an earlier one out unread — but a transcript growing faster than the debounce is read a pass behind. |
+| ZIP entry | 32 MB declared, 32 MB emitted, 96 MB per archive | The second is the one a decompression bomb runs into; the first is only what a header claims. |
+| Package parts | 512 per format | Past it, parts are listed as unread rather than silently dropped. |
 
 The truncation strategy used to be a prefix. An `.env` dump, a key block or a
 signature is at the *end* of a file far more often than in the middle, so a
@@ -295,7 +350,39 @@ neither is anything else in that profile.
 
 ---
 
-## 9. Prompt injection
+## 9. Parsers, and what has been done to them
+
+Reading attacker-supplied bytes with hand-written parsers is the largest
+attack surface this project has, and until recently none of those parsers had
+ever been handed anything malformed.
+
+`bench/fuzz.js` is a seeded mutation fuzzer over the real fixtures — eight
+mutators aimed at length fields, offsets, counts and magic numbers, chained one
+to four deep, every case reproducible from its seed. 200,000 inputs in about a
+minute. CI runs 20,000 on every push; `test/fuzz.test.js` runs a fixed slice
+plus hand-built structures that lie about their own size.
+
+Five invariants: never throws, never crashes internally, always returns one of
+the four statuses, bounded time, bounded output.
+
+The second one matters most and is the one that was missing. `extractDocument`
+catches everything so a malformed attachment cannot take the page down, which
+also means a genuine programming error inside a parser comes back as
+`status: 'opaque'` and reads as "this file has nothing in it". The first 200,000
+mutations passed while every `.xlsx` in the project was throwing a TypeError.
+With the caught message surfaced, the same corpus found 219 crashes — two
+out-of-bounds reads in the EXIF and PNG walkers, both reachable by a truncated
+image, which is what every half-downloaded photograph is.
+
+What this does not prove: that there is no bug left. A mutation fuzzer explores
+near a valid file. It is not a structure-aware fuzzer, there is no coverage
+feedback, and nothing here has been run under a sanitiser — JavaScript bounds
+checks are the only memory safety in play, and the fuzzer's job is to find the
+places where a `RangeError` is thrown rather than handled.
+
+---
+
+## 10. Prompt injection
 
 `src/injection.js` is lexical and heuristic. It looks for instructions
 addressed to an assistant, exfiltration requests with a real destination, tool
@@ -313,21 +400,30 @@ forward it.
 
 ---
 
-## 10. Responses
+## 11. Responses
 
-Response scanning runs on a 1.2-second debounce after the DOM settles, over the
-last 12,000 characters of rendered text plus open shadow roots. That means:
+Response scanning runs on a 1.2-second debounce after the DOM settles, over
+the rendered text plus open shadow roots, scanning forward from wherever the
+last pass stopped. It used to read a fixed 12,000-character tail, which meant a
+long reply could push an earlier one out of the window before anything looked
+at it — measured: a credential 30,000 characters back was missed entirely.
+That is fixed. What remains:
 
 - the content has already arrived — this is a notice, not a guard;
-- only the tail of the transcript is covered, not its whole history;
+- a transcript growing faster than the debounce is read a pass behind;
+- the mark resets when the page gets shorter, which virtual scrolling can do
+  without a new conversation, and a reset means earlier text is re-read rather
+  than skipped;
 - what the DOM renders may not match the logical response (streaming, virtual
   scrolling, collapsed blocks, canvas rendering);
-- a reply that arrives in pieces may be read mid-assembly, and a fingerprint set
-  stops the same finding being reported twice.
+- a reply that arrives in pieces may be read mid-assembly. A finding is
+  identified by its value *and* the text around it, so a re-render is quiet
+  while a second reply carrying the same secret is a second event — keying on
+  the value alone meant the second was silently dropped.
 
 ---
 
-## 11. The score, and the regulation names
+## 12. The score, and the regulation names
 
 **The score is a heuristic.** 93/100 is not a probability, not a percentage
 chance of anything, and not a compliance measure. The weights in `src/risk.js`
@@ -354,7 +450,7 @@ maintenance obligation this project has taken on.
 
 ---
 
-## 12. Redaction changes the text
+## 13. Redaction changes the text
 
 A placeholder is not the value it replaced, and sometimes that matters.
 
@@ -374,7 +470,7 @@ A placeholder is not the value it replaced, and sometimes that matters.
 
 ---
 
-## 13. What the panel asks of the reader
+## 14. What the panel asks of the reader
 
 A person should not need to know what Luhn is, what entropy means, or what an
 issuer range does in order to decide whether to press Enter. So the panel leads
@@ -391,7 +487,7 @@ compromise and it will not suit everybody.
 
 ---
 
-## 14. The detector library will get harder to reason about
+## 15. The detector library will get harder to reason about
 
 There are 102 detectors. Each new one is a new interaction with overlap
 resolution, with the shape gate, and with every other detector's guards — and
@@ -409,7 +505,7 @@ categories in `CATEGORIES` need to become files.
 
 ---
 
-## 15. It is advisory, not enforcement
+## 16. It is advisory, not enforcement
 
 "Send as-is" always works. That is deliberate — a tool that cannot be
 overridden gets uninstalled, and an uninstalled tool catches nothing — but it
@@ -425,11 +521,18 @@ means something.
 
 ---
 
-## 16. Enterprise
+## 17. Enterprise
 
 `storage.managed` is read on every load, so a policy pushed by Group Policy, a
 macOS configuration profile, Chrome Enterprise or Firefox `policies.json`
 applies. `extension/managed-schema.json` is the schema.
+
+`lockAllow` makes the managed allowlist the whole allowlist, and `neverAllow`
+names values that may never be allowlisted by anyone — including by the
+policy's own `allow` list. Both are opt-in, because the default is that policy
+*adds* protection rather than removing what a user chose. Without them an
+administrator could require a detector and then watch somebody allowlist the
+exact value it existed to catch.
 
 What does not exist:
 
@@ -444,7 +547,7 @@ What does not exist:
 
 ---
 
-## 17. Library and CLI
+## 18. Library and CLI
 
 - Node ≥ 20, for `DecompressionStream` and modern regular-expression syntax.
 - Zero dependencies, which means every line of the ZIP reader, the PDF text
@@ -460,7 +563,7 @@ What does not exist:
 
 ---
 
-## 18. Things this is not
+## 19. Things this is not
 
 - Not a DLP platform. No agent, no gateway, no endpoint coverage, no console.
 - Not a guarantee. It reduces accidental disclosure; it does not prevent

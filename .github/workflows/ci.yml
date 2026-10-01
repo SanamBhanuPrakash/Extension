@@ -70,6 +70,9 @@ jobs:
           git diff --exit-code --stat -- test/fixtures \
             || { echo "::error::the fixtures in test/fixtures do not match tools/make-fixtures.py"; exit 1; }
 
+      - name: Documentation still describes the code
+        run: node scripts/check-docs.js --no-color
+
       - name: Hostile input against the parsers
         run: node bench/fuzz.js --cases 20000 --no-color --quiet
 

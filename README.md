@@ -308,7 +308,7 @@ Add-ons are free. Store assets are generated at the required sizes in
 
 | | |
 |---|---|
-| **[LIMITATIONS](docs/LIMITATIONS.md)** | **Everything this does not do, in eighteen sections. Start here if you are deciding whether to trust it.** |
+| **[LIMITATIONS](docs/LIMITATIONS.md)** | **Everything this does not do, in twenty sections. Start here if you are deciding whether to trust it.** |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | Module graph, the four interception flows, the gating stack, storage split |
 | [BENCHMARK](docs/BENCHMARK.md) | Every number, how to reproduce it, and what it does not say |
 | [NER](docs/NER.md) | The on-device model, its 71.7% ceiling, the context layer, eight scripts |
@@ -316,14 +316,29 @@ Add-ons are free. Store assets are generated at the required sizes in
 | [PRIOR-ART](docs/PRIOR-ART.md) | Who did this first, who sells it, what this lacks |
 | [ROADMAP](docs/ROADMAP.md) | Where the exposure is, and what is genuinely left |
 | [PUBLISHING](docs/PUBLISHING.md) | Store requirements, fees, listing copy |
-| [DECISIONS](docs/DECISIONS.md) | Twenty-seven decision records, each with its cost |
+| [DECISIONS](docs/DECISIONS.md) | Twenty-nine decision records, each with its cost |
 | [CHANGELOG](CHANGELOG.md) · [PRIVACY](PRIVACY.md) | |
 
 ## What it does not do
 
-The full version is [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — eighteen
-sections, written because a boundary nobody states is a boundary everybody
-crosses. The short version:
+Four things get confused for each other, and most of this project's worst
+bugs were one of them mistaken for another:
+
+| | |
+|---|---|
+| **Detected** | something matched, and the panel named it |
+| **Inspected** | the *whole* artifact was read — not just the part the format is named after |
+| **Redacted** | every detected value was actually replaced in what gets sent |
+| **Prevented** | it did not reach the provider — which Chhanni never promises |
+
+Each is weaker than the one above it. A `.docx` whose body parsed while its
+header went unopened is detected-but-not-inspected. A panel that says *"6,000
+records — name, email, phone, PAN and compensation"* and then replaces only
+the names is detected-but-not-redacted. Both were real, both are fixed, and
+both are in [docs/LIMITATIONS.md](docs/LIMITATIONS.md) § 0 with what remains.
+
+The full version is twenty sections, written because a boundary nobody
+states is a boundary everybody crosses. The short version:
 
 - **No OCR.** Text that exists only as pixels is not read. The panel names the
   file and says so; for JPEG and PNG it also offers to strip the metadata.
@@ -347,8 +362,8 @@ crosses. The short version:
 
 ```console
 $ node --test test/*.test.js
-# tests 96
-# pass 96
+# tests 115
+# pass 115
 ```
 
 Checksums against known-good and known-bad vectors, a proof that the

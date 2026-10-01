@@ -1,5 +1,130 @@
 # Changelog
 
+## 0.4.0 — 2026-10-01
+
+A second audit, and the four worst things it found were all the same
+mistake: assuming that detecting something, inspecting the whole thing,
+replacing every value, and stopping it from being sent are one guarantee.
+
+[LIMITATIONS § 0](docs/LIMITATIONS.md) now opens with those four, because
+every section after it is really about the gap between two of them.
+
+### The redact button was replacing one column out of five
+
+The worst bug this project has had.
+
+    6,000 rows of: id, name, email, phone, PAN, salary
+    panel:  "6,000 records of personal data — person name, email address,
+             phone number, pan and compensation"
+    after pressing redact, still present:
+       6000 phone numbers
+       5500 email addresses
+       5500 PANs
+       4800 names
+
+`cellSpans()` looped columns outside and rows inside with a budget of
+1,200, so column one consumed the lot and columns two through five got
+nothing — not a share, nothing. Rows are now the outer loop, the caps rose
+to 20,000 rows and 60,000 values, and when they do bind the panel says
+what it cannot finish instead of promising it.
+
+Two things had to be fixed first. `resolveOverlaps` was O(f²), which is
+why the budget was 1,200 at all; it now buckets kept spans by position and
+a test asserts it matches the quadratic version exactly. And `redact()`
+re-spliced the whole document once per finding — thirteen gigabytes of
+copying for a 436 KB export, nine seconds. Collecting pieces and joining
+once: **29 ms, and nothing left behind.**
+
+A salary column also produced `<PERSON_NAME_2>`. It produces
+`<COMPENSATION_DATA_1>` now.
+
+### A header is part of the document
+
+A contract's classification marking lives in `word/header1.xml`, which was
+never opened. "STRICTLY CONFIDENTIAL — Northwind / Meridian, matter
+2026-114" was invisible, and so was the footer's author and email.
+
+Extraction now walks every text-bearing part — headers, footers, comments,
+footnotes, endnotes, speaker notes, slide masters and layouts, chart
+labels, SmartArt, OpenDocument's `styles.xml` — and **reports the parts it
+did not read**. A package with anything genuinely unread is `partial`, not
+`readable`:
+
+    contract.docx  partial
+      Document properties name Anita Deshpande. 3 parts read.
+      1 part of this package was not read: word/embeddings/oleObject1.bin.
+
+### Fuzzing, and two out-of-bounds reads it found
+
+`bench/fuzz.js`: a seeded mutation fuzzer over the real fixtures, eight
+mutators chained one to four deep, 200,000 inputs in about a minute, every
+case reproducible with `--replay`.
+
+The first version asserted "never throws" and passed immediately, which
+should have been suspicious. `extractDocument` catches everything, so a
+genuine bug inside a parser comes back as `opaque` and reads as "this file
+has nothing in it" — the invariant was vacuous. It proved itself so by
+accident: threading a new budget into `officedoc.js` collided with a local
+variable of the same name, every `.xlsx` in the project started throwing a
+TypeError, and the fuzzer had nothing to say.
+
+With the caught message surfaced, the same corpus found **219 crashes**:
+
+- `readIfd` admitted a 200-byte EXIF string on a bounds check that looked
+  at four of them, then read to the end
+- `parsePngText` read eight bytes past a chunk header it had only proved
+  was present
+
+Both reachable by a truncated image. Both fixed; 200,000 inputs clean.
+
+### A zip bomb was bounded by what it claimed, not what it produced
+
+A 510 KB `.docx` declaring `size = 1000` whose deflate stream expands to
+512 MB **allocated the lot, in 9.1 seconds**. `new Response(stream)
+.arrayBuffer()` reads to completion, so the only guard was a number the
+archive wrote itself.
+
+`inflateBounded()` reads chunk by chunk and cancels past the cap. Same
+archive: refused in 441 ms, zero bytes. Three ceilings now — what a part
+may declare, what decompression may emit, and the sum across one file —
+and ZIP64 fields go through a check that refuses anything past
+`Number.MAX_SAFE_INTEGER` rather than letting `Number()` approximate it.
+
+### A reply could be skipped by the reply that arrived after it
+
+Response scanning read a fixed 12,000-character tail. A credential 30,000
+characters back, behind a long answer, was **MISSED** — verified in
+Chromium, and verified again by reverting the fix. It now scans forward
+from the last mark, so growth is always covered.
+
+Dedupe was keyed on finding fingerprints alone, so the same secret in two
+genuinely different replies was one event and the second was dropped. A
+finding is now identified by its value *and* its surroundings.
+
+### An administrator can lock the allowlist
+
+`mergePolicy` unioned the user's allowlist with the managed one
+unconditionally, so an organisation could require a detector and then
+watch somebody allowlist the exact value it existed to catch. `lockAllow`
+and `neverAllow` close it, both opt-in, both in the managed schema — and a
+test now asserts every setting the code honours is declared there, because
+one that is not cannot be deployed by GPO at all.
+
+### Documentation drift is now a build failure
+
+The audit found the README claiming 96 tests against a repository with 97.
+Harmless on its own, and exactly the shape of the thing that is not, in a
+project that leans on its documentation to explain where its boundaries
+are.
+
+`scripts/check-docs.js` checks the test count, detector count, proof
+count, section counts, decision-record count, the store description
+length, and that every relative link resolves. It found the drift the
+audit named plus two more, including one introduced while writing this
+entry. CI runs it.
+
+115 tests. Corpus F1 100%, NER F1 98.9% names and 100% addresses.
+
 ## 0.3.0 — 2026-09-26
 
 The release that opened the attachment, and then measured itself against
@@ -202,7 +327,7 @@ because a boundary nobody states is a boundary everybody crosses.
 
 ### Also
 
-- 96 tests, up from 66, including a document suite that runs the extractors
+- 115 tests, up from 66, including a document suite that runs the extractors
   against real DOCX, XLSX, PPTX, ODT, PDF, JPEG and PNG fixtures built by
   `tools/make-fixtures.py` with nothing but the Python standard library.
 - The JPEG fixture is now a genuinely decodable 16×16 image. The old one was
