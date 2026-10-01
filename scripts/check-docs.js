@@ -13,8 +13,7 @@
  *
  *   node scripts/check-docs.js
  */
-import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RULES, PROOFS } from '../src/rules.js';
@@ -45,18 +44,18 @@ function check(what, actual, where, pattern) {
   }
 }
 
-// ── how many tests actually run ──────────────────────────────────────────
-let tests = 0;
-try {
-  const out = execFileSync('node', ['--test', 'test/detect.test.js', 'test/documents.test.js', 'test/fuzz.test.js'],
-    { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
-  tests = Number(/^# tests (\d+)$/m.exec(out)?.[1] ?? 0);
-} catch (err) {
-  // A failing suite still prints its totals; a broken runner does not.
-  tests = Number(/^# tests (\d+)$/m.exec(String(err.stdout ?? ''))?.[1] ?? 0);
-}
+// ── how many tests there are ─────────────────────────────────────────────
+//
+// Counted from the source rather than by running the suite. Shelling out to
+// `node --test` made this check depend on the runner's own output format,
+// which differs between Node versions — it passed on 22 and failed on 24, in
+// CI, for a repository whose documentation was correct. A checker that is
+// wrong about the thing it checks is worse than no checker.
+const testFiles = readdirSync(join(root, 'test')).filter((f) => f.endsWith('.test.js'));
+const tests = testFiles
+  .reduce((n, f) => n + (read(`test/${f}`).match(/^test\(/gm) || []).length, 0);
 if (!tests) {
-  problems.push('could not determine the test count — the suite did not report one');
+  problems.push('found no tests at all — the check itself has rotted');
 } else {
   check('tests', tests, 'README.md', /# (?:tests|pass) (\d+)/g);
   check('tests', tests, 'CHANGELOG.md', /^- (\d+) tests,/gm);
@@ -126,7 +125,6 @@ for (const [, word] of read('README.md').matchAll(/\| \[DECISIONS\][^|]*\| ([\w-
 checks.push(`decision records: ${records}`);
 
 // ── every doc link resolves ──────────────────────────────────────────────
-import { existsSync } from 'node:fs';
 for (const where of ['README.md', 'docs/LIMITATIONS.md', 'docs/BENCHMARK.md', 'docs/ARCHITECTURE.md',
   'docs/THREAT-MODEL.md', 'docs/ROADMAP.md', 'docs/DECISIONS.md', 'CHANGELOG.md', 'PRIVACY.md']) {
   for (const [, target] of read(where).matchAll(/\]\((?!https?:|#)([^)#]+)[^)]*\)/g)) {
