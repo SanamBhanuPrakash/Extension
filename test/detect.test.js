@@ -1011,3 +1011,48 @@ test('an IBAN is the right length for its country, not merely mod-97 valid', () 
   assert.ok(!has('GB82WEST1234569876543', 'iban'), 'one character short');
   assert.ok(!has('ZZ8212345698765432', 'iban'), 'ZZ is not a country');
 });
+
+// ───────────────────────────────────────────────── organisation policy
+
+test('an administrator can lock the allowlist, and the default does not', async () => {
+  const { mergePolicy } = await import('../src/managed.js');
+  const user = { mode: 'warn', disabled: [], allow: ['mine@example.com'] };
+
+  // The forgiving default: policy adds, the user keeps what they chose.
+  const open = mergePolicy(user, { allow: ['corp@example.com'] });
+  assert.deepEqual(open.allow.sort(), ['corp@example.com', 'mine@example.com']);
+  assert.equal(open.managed.allowLocked, false);
+
+  // Locked: the managed list is the whole list. Without this an administrator
+  // could require a detector and then watch a user allowlist the exact value
+  // it existed to catch, which is a suggestion rather than a policy.
+  const locked = mergePolicy(user, { allow: ['corp@example.com'], lockAllow: true });
+  assert.deepEqual(locked.allow, ['corp@example.com']);
+  assert.equal(locked.managed.allowLocked, true);
+});
+
+test('neverAllow beats every allowlist, including the policy that declares it', async () => {
+  const { mergePolicy } = await import('../src/managed.js');
+  const key = ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join('');
+  const merged = mergePolicy(
+    { mode: 'warn', disabled: [], allow: [key, 'mine@example.com'] },
+    { allow: ['corp@example.com', key], neverAllow: [key] },
+  );
+  assert.ok(!merged.allow.includes(key), 'a policy cannot contradict itself');
+  assert.deepEqual(merged.allow.sort(), ['corp@example.com', 'mine@example.com']);
+  assert.equal(merged.managed.neverAllowCount, 1);
+
+  // And the scanner honours it: the value is reported despite both lists.
+  assert.ok(scan(key, merged).findings.some((f) => f.ruleId === 'aws_access_key_id'));
+});
+
+test('the managed schema documents every field mergePolicy reads', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { MANAGED_DEFAULTS } = await import('../src/managed.js');
+  const schema = JSON.parse(readFileSync('extension/managed-schema.json', 'utf8'));
+  // A setting the code honours but the schema does not declare cannot be
+  // deployed by GPO at all, which makes it a setting that does not exist.
+  for (const key of Object.keys(MANAGED_DEFAULTS)) {
+    assert.ok(schema.properties[key], `${key} is read by mergePolicy but absent from the schema`);
+  }
+});

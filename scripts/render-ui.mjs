@@ -334,6 +334,49 @@ await shot('options-light', 'options.html', 800, false, async (p) => { await p.c
   await page.close();
 }
 
+// ── response scanning: a long transcript ────────────────────────────────
+//
+// The old scanner read a fixed 12,000-character tail of the page on every
+// pass. A reply carrying a credential, followed by a longer reply, was pushed
+// out of that window before anything looked at it and was never read. This
+// builds exactly that: a secret, then 30,000 characters of ordinary answer
+// after it.
+{
+  const page = await browser.newPage({ viewport: { width: 900, height: 820 } });
+  const errs = [];
+  page.on('pageerror', (e) => errs.push(e.message));
+  await page.addInitScript(manifestStub);
+  await page.addInitScript(stub);
+  await page.goto('http://127.0.0.1:8731/harness.html');
+  await page.waitForTimeout(900);
+
+  const secret = ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join('');
+  await page.evaluate(({ secret }) => {
+    const thread = document.querySelector('.thread');
+    const add = (text) => {
+      const msg = document.createElement('div');
+      msg.className = 'msg';
+      msg.innerHTML = '<div class="av"></div><div class="bubble"><b>Assistant</b></div>';
+      msg.querySelector('.bubble').appendChild(document.createTextNode(text));
+      thread.appendChild(msg);
+    };
+    add(`Here is the key from your config: ${secret} — rotate it when you can.`);
+    // Everything after it, far longer than the window the old code read.
+    for (let i = 0; i < 40; i++) {
+      add(`Follow-up ${i}. ` + 'The deployment pipeline runs in three stages and each one waits on the last. '.repeat(10));
+    }
+  }, { secret });
+
+  const caught = await page.waitForSelector('.chhanni-notice', { timeout: 8000 })
+    .then((el) => el.innerText(), () => null);
+  console.log('\n--- response scanning ---');
+  console.log('page length:', await page.evaluate(() => document.body.innerText.length), 'chars');
+  console.log('secret 30k chars back:', caught ? 'caught' : 'MISSED');
+  if (caught) console.log('  notice:', caught.replace(/\s+/g, ' ').trim().slice(0, 90));
+  if (errs.length) console.log('page errors:', errs.join(' | '));
+  await page.close();
+}
+
 // End-to-end: does "Redact and continue" actually clean the composer?
 const page = await browser.newPage({ viewport:{width:900,height:820} });
 await page.addInitScript(manifestStub);

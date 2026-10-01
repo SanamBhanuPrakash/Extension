@@ -471,27 +471,72 @@
     return text;
   }
 
+  /**
+   * How much of the page has already been through the scanner.
+   *
+   * The old version read a fixed 12,000-character tail on every pass, which
+   * is only the newest reply when replies are short. A long answer, a long
+   * tool output or a pasted code block pushes the previous one out of the
+   * window before anything looks at it, and nothing ever comes back for it —
+   * a reply could be skipped entirely by a reply that arrived after it.
+   *
+   * Scanning forward from where the last pass stopped means growth is always
+   * covered, whatever the shape of the transcript. The overlap carries a
+   * finding that straddles the boundary; the cap bounds one pass, and
+   * whatever it does not reach this time is still ahead of the mark and gets
+   * read on the next one.
+   */
+  let scannedTo = 0;
+  const RESCAN_OVERLAP = 2000;
+  const MAX_PASS_BYTES = 24000;
+
   function inspectResponses() {
     if (policy.watchResponses === false || policy.mode === 'off') return;
-    // Only the most recent stretch of the page: an assistant reply is appended
-    // at the end, and re-reading the whole transcript on every mutation would
-    // be both slow and noisy.
     const body = visibleText();
     if (body.length < 40) return;
-    const tail = body.slice(-12000);
+
+    // A shorter page means a new conversation, or virtual scrolling recycling
+    // what was there. Either way the mark no longer refers to this text.
+    if (body.length < scannedTo) { scannedTo = 0; seenResponses.clear(); }
+
+    const from = Math.max(0, scannedTo - RESCAN_OVERLAP);
+    const to = Math.min(body.length, from + MAX_PASS_BYTES);
+    if (to <= from) return;
+    const window = body.slice(from, to);
+    // Only advance to what was actually read, so a transcript that grew faster
+    // than one pass is finished by the next rather than skipped.
+    scannedTo = to;
+    if (to < body.length) {
+      clearTimeout(responseTimer);
+      responseTimer = setTimeout(inspectResponses, 60);
+    }
 
     let result;
-    try { result = scan(tail, { ...policy, ner: false, tables: false }); } catch { return; }
+    try { result = scan(window, { ...policy, ner: false, tables: false }); } catch { return; }
 
     const worth = result.findings.filter((f) =>
       f.ruleId === 'prompt_injection' || (!f.advisory && f.severity === 'critical'));
     if (!worth.length) return;
 
-    // Fingerprints, so the same reply is not reported on every mutation.
-    const key = worth.map((f) => f.fingerprint).sort().join('|');
+    /**
+     * What makes two findings the same event.
+     *
+     * Keying on the fingerprints alone meant the same secret in two genuinely
+     * different replies was one event, and the second was silently dropped —
+     * which is the wrong way round for a tool whose entire job is to say when
+     * something sensitive has appeared. A finding is identified by its value
+     * *and* the text it sits in, so a re-render of the same reply is quiet and
+     * a second reply carrying the same key is not.
+     */
+    const context = (f) => window
+      .slice(Math.max(0, f.start - 30), f.start + (f.end - f.start) + 30)
+      .replace(/\s+/g, ' ').trim();
+    const key = worth.map((f) => `${f.fingerprint}@${context(f)}`).sort().join('|');
     if (seenResponses.has(key)) return;
+    // Oldest out, rather than wiping the lot: clearing meant the first
+    // sixty-four findings all notified a second time.
     seenResponses.add(key);
-    if (seenResponses.size > 64) seenResponses.clear();
+    if (seenResponses.size > 64) seenResponses.delete(seenResponses.values().next().value);
 
     const injection = worth.find((f) => f.ruleId === 'prompt_injection');
     if (injection) {

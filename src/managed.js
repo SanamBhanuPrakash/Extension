@@ -22,6 +22,8 @@ export const MANAGED_DEFAULTS = {
   requiredDetectors: [],
   disabled: [],
   allow: [],
+  lockAllow: false,
+  neverAllow: [],
   codenames: [],
   watchResponses: null,
   message: null,
@@ -30,10 +32,23 @@ export const MANAGED_DEFAULTS = {
 /**
  * Merges an administrator's policy over a user's own settings.
  *
- * Precedence is deliberate and explained in the UI: an organisation may *add*
- * protection and may lock the interruption level, but a user can always add
- * their own allowlist entries on top. Policy that silently removes protection
- * a user chose would be a surprise, and surprises get extensions uninstalled.
+ * Precedence is deliberate and explained in the UI. The default is that an
+ * organisation *adds* protection and may lock the interruption level, while a
+ * user keeps their own allowlist on top: policy that silently removes
+ * protection a user chose is a surprise, and surprises get extensions
+ * uninstalled.
+ *
+ * The default was also, for a while, the only behaviour — which meant an
+ * administrator could require a detector and then watch a user allowlist the
+ * exact value it was there to catch. That is not a policy, it is a
+ * suggestion. Two settings close it, and both are opt-in so the forgiving
+ * default stays the default:
+ *
+ *   lockAllow    the managed allowlist is the whole allowlist
+ *   neverAllow   specific values that may never be allowlisted by anyone
+ *
+ * `neverAllow` wins over both lists, including the managed one, so a policy
+ * cannot contradict itself.
  */
 export function mergePolicy(userPolicy, managed) {
   if (!managed || typeof managed !== 'object') return { ...userPolicy, managed: null };
@@ -48,13 +63,24 @@ export function mergePolicy(userPolicy, managed) {
     ...userPolicy,
     mode: m.lockMode && m.mode ? m.mode : (userPolicy.mode || m.mode || 'warn'),
     disabled: [...disabled],
-    allow: [...new Set([...(userPolicy.allow || []), ...(m.allow || [])])],
+    // An administrator who can add a detector but cannot stop a value being
+    // allowlisted does not have a policy, they have a suggestion. `lockAllow`
+    // makes the managed allowlist the whole allowlist; `neverAllow` is the
+    // narrower form, for the handful of values that must always be reported
+    // whatever else is configured.
+    allow: (m.lockAllow
+      ? [...new Set(m.allow || [])]
+      : [...new Set([...(userPolicy.allow || []), ...(m.allow || [])])]
+    ).filter((v) => !(m.neverAllow || []).includes(v)),
+    neverAllow: [...new Set(m.neverAllow || [])],
     watchResponses: m.watchResponses !== null ? m.watchResponses : userPolicy.watchResponses,
     codenames: m.codenames || [],
     managed: {
       active: true,
       locked: Boolean(m.lockMode && m.mode),
       required: m.requiredDetectors || [],
+      allowLocked: Boolean(m.lockAllow),
+      neverAllowCount: (m.neverAllow || []).length,
       message: m.message || null,
       codenameCount: (m.codenames || []).length,
     },
