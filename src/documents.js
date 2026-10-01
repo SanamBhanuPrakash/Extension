@@ -109,13 +109,29 @@ export async function extractDocument(bytes, filename = '') {
         const meta = office.metadata || {};
         const metaText = [meta.author, meta.title, meta.lastModifiedBy, meta.company]
           .filter(Boolean).join('\n');
+        // "Readable" used to mean "the body parsed", which is not the same as
+        // "the document was inspected". A package is many parts; some of them
+        // this reads, some it recognises and cannot, and some are embedded
+        // objects it will never read. The three counts are different and the
+        // status now says which one it is.
+        const cover = office.coverage || { read: [], skipped: [], opaque: [] };
+        const unread = cover.skipped.length + cover.opaque.length;
+        const notes = [];
+        if (meta.author) notes.push(`Document properties name ${meta.author}.`);
+        if (cover.read.length > 1) notes.push(`${cover.read.length} parts read.`);
         return {
           ...base,
           kind: office.kind,
-          status: 'readable',
+          status: unread ? 'partial' : 'readable',
           text: metaText ? `${metaText}\n\n${office.text}` : office.text,
           metadata: meta,
-          note: meta.author ? `Document properties name ${meta.author}.` : null,
+          coverage: cover,
+          note: notes.join(' ') || null,
+          reason: unread
+            ? `${unread} part${unread === 1 ? '' : 's'} of this package ${unread === 1 ? 'was' : 'were'} not read: `
+              + `${[...cover.skipped, ...cover.opaque].slice(0, 3).join(', ')}`
+              + `${unread > 3 ? `, and ${unread - 3} more` : ''}.`
+            : null,
         };
       }
       return {
@@ -220,10 +236,16 @@ export function rewriteMode(doc) {
   if (REWRITE_IN_PLACE.has(doc.kind) && doc.text) {
     return { mode: 'text', explain: 'replaced in place, same name and format' };
   }
-  if (CONTAINERS.has(doc.kind) && doc.status === 'readable' && doc.text) {
+  if (CONTAINERS.has(doc.kind) && (doc.status === 'readable' || doc.status === 'partial') && doc.text) {
+    // A partially read package still has text worth redacting. What it does
+    // not have is everything, and saying "the text that was read" rather than
+    // "the text" is the difference between an honest offer and a promise.
+    const whole = doc.status === 'readable';
     return {
       mode: 'convert', suffix: '.redacted.txt',
-      explain: 'attached as text instead \u2014 the words survive, the formatting does not',
+      explain: whole
+        ? 'attached as text instead \u2014 the words survive, the formatting does not'
+        : 'attached as text instead \u2014 the parts that could be read, without the formatting',
     };
   }
   if (doc.strippable) {

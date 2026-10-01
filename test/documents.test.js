@@ -32,7 +32,9 @@ test('files are identified by what they are, not by what they are called', () =>
 
 test('a DOCX gives up its text, its tables and its document properties', async () => {
   const doc = await extractDocument(bytes('contract.docx'), 'contract.docx');
-  assert.equal(doc.status, 'readable');
+  // `partial`, not `readable`: the fixture carries an embedded OLE object, and
+  // a package with a part nobody read is not a package that was inspected.
+  assert.equal(doc.status, 'partial');
   assert.equal(doc.kind, 'word');
   assert.match(doc.text, /PRIVILEGED AND CONFIDENTIAL/);
   assert.match(doc.text, /priya\.nair@northwind\.co\.in/);
@@ -124,7 +126,7 @@ test('the rewrite offered for each file is one the format can actually deliver',
     const doc = await extractDocument(bytes(name), name);
     const plan = rewriteMode(doc);
     assert.equal(plan.mode, 'convert', name);
-    assert.match(plan.explain, /formatting does not/);
+    assert.match(plan.explain, /without the formatting|formatting does not/);
     const out = rewriteBytes(bytes(name), doc, 'redacted text');
     assert.equal(out.name(name), `${name}.redacted.txt`);
   }
@@ -164,5 +166,47 @@ test('what cannot be read says so instead of coming back clean', async () => {
   for (const bad of [new Uint8Array(0), new Uint8Array([0x25, 0x50, 0x44, 0x46]), bytes('contract.docx').subarray(0, 120)]) {
     const r = await extractDocument(bad, 'broken');
     assert.ok(['opaque', 'metadata', 'readable', 'partial'].includes(r.status));
+  }
+});
+
+// ─────────────────────────────────────────── what "inspected" actually means
+//
+// Reading word/document.xml and calling the document inspected was a real
+// detection miss, not merely a reporting one. A contract's classification
+// marking lives in a header, which is a different part of the package.
+
+test('a header and a footer are part of the document', async () => {
+  const doc = await extractDocument(bytes('contract.docx'), 'contract.docx');
+  assert.match(doc.text, /STRICTLY CONFIDENTIAL/, 'the header is in word/header1.xml');
+  assert.match(doc.text, /rohan\.mehta@northwind\.co\.in/, 'the footer is in word/footer1.xml');
+
+  // And the marking in the header has to reach the detectors, not just the text.
+  const found = scan(doc.text).findings.map((f) => f.ruleId);
+  assert.ok(found.includes('classification_marking'));
+  assert.ok(found.includes('email'));
+});
+
+test('a package says which of its parts it read and which it did not', async () => {
+  const doc = await extractDocument(bytes('contract.docx'), 'contract.docx');
+  assert.ok(doc.coverage.read.includes('word/document.xml'));
+  assert.ok(doc.coverage.read.includes('word/header1.xml'));
+  assert.ok(doc.coverage.read.includes('word/footer1.xml'));
+
+  // An embedded OLE object is a part that may hold anything and that nothing
+  // here reads. It is named rather than passed over.
+  assert.deepEqual(doc.coverage.opaque, ['word/embeddings/oleObject1.bin']);
+  assert.match(doc.reason, /1 part of this package was not read/);
+  assert.match(doc.reason, /oleObject1\.bin/);
+});
+
+test('structure is not reported as something that went unread', async () => {
+  // [Content_Types].xml, the relationship files and the sheet manifest are
+  // scaffolding. Listing them as "not inspected" would bury the one line that
+  // matters under six that do not.
+  for (const name of ['employees.xlsx', 'board.pptx', 'notes.odt']) {
+    const doc = await extractDocument(bytes(name), name);
+    assert.equal(doc.status, 'readable', `${name} has nothing genuinely unread`);
+    assert.deepEqual(doc.coverage.skipped, [], name);
+    assert.deepEqual(doc.coverage.opaque, [], name);
   }
 });

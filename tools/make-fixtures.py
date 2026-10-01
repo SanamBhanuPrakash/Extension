@@ -69,8 +69,27 @@ document_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </w:tbl>
 </w:body></w:document>'''
 
+# A header and a footer. In a real contract this is exactly where the
+# classification marking and the matter reference live, and neither is in
+# document.xml — they are separate parts referenced from it.
+HEADER_XML = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:p><w:r><w:t xml:space="preserve">STRICTLY CONFIDENTIAL \u2014 Northwind / Meridian, matter 2026-114</w:t></w:r></w:p>
+</w:hdr>'''
+
+FOOTER_XML = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:p><w:r><w:t xml:space="preserve">Prepared by Rohan Mehta, rohan.mehta@northwind.co.in</w:t></w:r></w:p>
+</w:ftr>'''
+
 with Zip(os.path.join(OUT, 'contract.docx'), 'w', zipfile.ZIP_DEFLATED) as z:
     z.writestr('[Content_Types].xml', CT.format(overrides='<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'))
+    z.writestr('word/header1.xml', HEADER_XML)
+    z.writestr('word/footer1.xml', FOOTER_XML)
+    # An embedded OLE object: a linked spreadsheet, which is an ordinary thing
+    # for a contract to carry and a thing nothing here can read. It exists so
+    # the fixtures cover the `partial` status, not only `readable`.
+    z.writestr('word/embeddings/oleObject1.bin', b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1' + b'\x00' * 256)
     z.writestr('_rels/.rels', RELS.format(type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument', target='word/document.xml'))
     z.writestr('word/document.xml', document_xml)
     z.writestr('docProps/core.xml', '<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>Anita Deshpande</dc:creator><dc:title>Master Services Agreement</dc:title></cp:coreProperties>')

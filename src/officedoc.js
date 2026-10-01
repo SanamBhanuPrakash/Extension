@@ -169,6 +169,87 @@ const MAX_SPREADSHEET_ROWS = 5000;
  * @param {string} filename
  * @returns {Promise<{kind, text, metadata, parts}|null>}
  */
+/**
+ * The parts of a package that carry text, and the ones that carry something
+ * this cannot read.
+ *
+ * Reading `word/document.xml` and calling the document inspected was the gap:
+ * a contract's classification marking lives in `word/header1.xml`, not in the
+ * body, and so did "STRICTLY CONFIDENTIAL — Northwind / Meridian, matter
+ * 2026-114" in the fixture. Headers, footers, comments, speaker notes, slide
+ * masters, chart labels and OpenDocument's styles.xml are all separate parts,
+ * all routinely hold the most sensitive line in the file, and none of them
+ * were being opened.
+ *
+ * `OPAQUE_PARTS` is the other half of honesty: an embedded spreadsheet inside
+ * a .docx, or an image in a slide deck, is a part that certainly may carry
+ * data and certainly is not being read. Those are counted and reported rather
+ * than passed over.
+ */
+const TEXT_PARTS = {
+  word: /^word\/(document|header\d*|footer\d*|comments|commentsExtended|footnotes|endnotes)\.xml$|^word\/(charts|glossary)\/.*\.xml$/,
+  spreadsheet: /^xl\/(worksheets\/sheet\d+|comments\d*|sharedStrings)\.xml$|^xl\/(charts|threadedComments|drawings)\/.*\.xml$/,
+  presentation: /^ppt\/(slides|notesSlides|slideMasters|slideLayouts|comments|charts|diagrams)\/.*\.xml$/,
+  opendocument: /^(content|styles|meta)\.xml$/,
+};
+
+/** Parts that may hold data and are not readable by anything here. */
+const OPAQUE_PARTS = /\/(embeddings|media|oleObject)\//i;
+
+/** Parts that are structure, not content, and are not worth reporting. */
+const STRUCTURAL_PARTS = new RegExp([
+  '^(\\[Content_Types\\]\\.xml|mimetype|settings\\.xml|manifest\\.rdf)$',
+  '^(_rels|META-INF|docProps|customXml|Configurations2|Thumbnails)/',
+  '/_rels/', '\\.rels$',
+  // The manifests that say which sheets and slides exist. Structure, not
+  // content: reporting them as "not inspected" is noise, and a defined name
+  // in xl/workbook.xml is the one thing this gives up. LIMITATIONS says so.
+  '^(xl/workbook|ppt/presentation|ppt/presProps|ppt/viewProps|ppt/tableStyles)\\.xml$',
+  '^(word|xl|ppt)/(theme|printerSettings|styles|settings|fontTable|webSettings|numbering|calcChain|tables|metadata|activeX|customProperty|slideMasters/_rels|commentAuthors)',
+].join('|'));
+
+/** Every `<w:t>`-style run in a part we have no bespoke extractor for. */
+function genericText(xml) {
+  return textOf(xml, 't')
+    .concat(textOf(xml, 'p'))
+    .map((t) => decodeEntities(t.replace(/<[^>]*>/g, '')).trim())
+    .filter(Boolean);
+}
+
+/**
+ * Reads every text-bearing part for a kind, and inventories what it did not.
+ * @returns {Promise<{blocks: string[], read: string[], skipped: string[], opaque: string[]}>}
+ */
+async function readParts(bytes, entries, kind, budget, extractors = {}, max = 512) {
+  const pattern = TEXT_PARTS[kind];
+  const blocks = [];
+  const read = [];
+  const skipped = [];
+  const opaque = [];
+
+  const wanted = entries
+    .filter((e) => pattern.test(e.name))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+  for (const entry of wanted.slice(0, max)) {
+    const xml = await readText(bytes, entries, entry.name, budget);
+    if (xml === null) { skipped.push(entry.name); continue; }
+    const extract = Object.entries(extractors).find(([re]) => new RegExp(re).test(entry.name));
+    const lines = extract ? extract[1](xml) : genericText(xml);
+    read.push(entry.name);
+    if (lines && lines.length) blocks.push(Array.isArray(lines) ? lines.join('\n') : String(lines));
+  }
+  if (wanted.length > max) skipped.push(`${wanted.length - max} more parts`);
+
+  for (const entry of entries) {
+    if (pattern.test(entry.name) || STRUCTURAL_PARTS.test(entry.name)) continue;
+    if (OPAQUE_PARTS.test(entry.name)) opaque.push(entry.name);
+    else if (/\.(xml|txt|csv|json)$/i.test(entry.name)) skipped.push(entry.name);
+    else opaque.push(entry.name);
+  }
+  return { blocks, read, skipped, opaque };
+}
+
 export async function extractOfficeDocument(bytes, filename = '') {
   if (!looksLikeZip(bytes)) return null;
   const entries = readCentralDirectory(bytes);
@@ -193,21 +274,14 @@ export async function extractOfficeDocument(bytes, filename = '') {
   const app = await readText(bytes, entries, 'docProps/app.xml', budget);
   if (app) metadata.company = textOf(app, 'Company')[0]?.trim();
 
-  // Word
+  // Word. The body, and every header, footer, comment, footnote, endnote,
+  // chart label and glossary entry beside it.
   if (has('word/document.xml')) {
-    const xml = await readText(bytes, entries, 'word/document.xml', budget);
-    if (xml === null) return null;
-    let text = extractDocx(xml);
-    // Comments and footnotes are where the candid remarks live.
-    for (const extra of ['word/comments.xml', 'word/footnotes.xml', 'word/endnotes.xml']) {
-      if (!has(extra)) continue;
-      const more = await readText(bytes, entries, extra, budget);
-      if (more) {
-        const lines = textOf(more, 't').map((t) => t.trim()).filter(Boolean);
-        if (lines.length) text += `\n\n${lines.join('\n')}`;
-      }
-    }
-    return { kind: 'word', text, metadata, parts: 1 };
+    const got = await readParts(bytes, entries, 'word', budget, {
+      '^word/document\\.xml$': (xml) => [extractDocx(xml)],
+    });
+    if (!got.read.length) return null;
+    return { kind: 'word', text: got.blocks.join('\n\n'), metadata, parts: got.read.length, coverage: got };
   }
 
   // Excel
@@ -223,37 +297,40 @@ export async function extractOfficeDocument(bytes, filename = '') {
       .filter((e) => /^xl\/worksheets\/sheet\d+\.xml$/.test(e.name))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
-    const blocks = [];
     // Rows left to emit, which is a different budget from the archive's
     // decompression allowance and used to share its name. Passing a row count
     // where a `{remaining}` object was expected made every spreadsheet read as
     // `opaque`: assigning a property to a number primitive throws in a module,
     // and the throw was swallowed as "could not be parsed".
     let rowsLeft = MAX_SPREADSHEET_ROWS;
-    for (const sheet of sheets) {
-      if (rowsLeft <= 0) break;
-      const xml = await readText(bytes, entries, sheet.name, budget);
-      if (!xml) continue;
-      const lines = extractSheet(xml, sharedStrings, rowsLeft);
-      rowsLeft -= lines.length;
-      if (lines.length) blocks.push(lines.join('\n'));
-    }
-    return { kind: 'spreadsheet', text: blocks.join('\n\n'), metadata, parts: sheets.length };
+    const got = await readParts(bytes, entries, 'spreadsheet', budget, {
+      '^xl/worksheets/sheet\\d+\\.xml$': (xml) => {
+        if (rowsLeft <= 0) return [];
+        const lines = extractSheet(xml, sharedStrings, rowsLeft);
+        rowsLeft -= lines.length;
+        return lines;
+      },
+      // Already consumed above; reading it again would duplicate every string.
+      '^xl/sharedStrings\\.xml$': () => [],
+    });
+    return {
+      kind: 'spreadsheet', text: got.blocks.join('\n\n'), metadata,
+      parts: sheets.length, coverage: got,
+    };
   }
 
   // PowerPoint
   if (entries.some((e) => /^ppt\/slides\/slide\d+\.xml$/.test(e.name))) {
-    const slides = entries
-      .filter((e) => /^ppt\/(slides|notesSlides)\/(slide|notesSlide)\d+\.xml$/.test(e.name))
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-    const blocks = [];
-    for (const slide of slides) {
-      const xml = await readText(bytes, entries, slide.name, budget);
-      if (!xml) continue;
-      const lines = extractSlide(xml);
-      if (lines.length) blocks.push(lines.join('\n'));
-    }
-    return { kind: 'presentation', text: blocks.join('\n\n'), metadata, parts: blocks.length };
+    // Slides and speaker notes, and now masters, layouts, comments, chart
+    // labels and SmartArt too — a template's footer is on the master, and a
+    // reviewer's comment is nowhere near the slide it is about.
+    const got = await readParts(bytes, entries, 'presentation', budget, {
+      '^ppt/(slides|notesSlides)/': (xml) => extractSlide(xml),
+    });
+    return {
+      kind: 'presentation', text: got.blocks.join('\n\n'), metadata,
+      parts: got.read.length, coverage: got,
+    };
   }
 
   // OpenDocument
@@ -268,7 +345,13 @@ export async function extractOfficeDocument(bytes, filename = '') {
     const mimetype = await readText(bytes, entries, 'mimetype', budget);
     const kind = /spreadsheet/.test(mimetype || '') ? 'spreadsheet'
       : /presentation/.test(mimetype || '') ? 'presentation' : 'word';
-    return { kind, text: extractOpenDocument(xml), metadata, parts: 1 };
+    // styles.xml is where OpenDocument keeps headers and footers, which is
+    // where a marking goes.
+    const got = await readParts(bytes, entries, 'opendocument', budget, {
+      '^content\\.xml$': (x) => [extractOpenDocument(x)],
+      '^meta\\.xml$': () => [],
+    });
+    return { kind, text: got.blocks.join('\n\n'), metadata, parts: got.read.length, coverage: got };
   }
 
   return null;
