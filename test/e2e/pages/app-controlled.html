@@ -1,0 +1,62 @@
+<!doctype html><meta charset="utf-8"><title>mock chat — controlled editors</title>
+<style>
+ body{font:14px system-ui;margin:0;height:160vh}
+ .app{position:fixed;bottom:0;left:0;right:0;padding:16px;background:#fff;border-top:1px solid #ddd}
+ form{display:flex;gap:8px;max-width:760px;margin:0 auto}
+ #prompt-textarea{flex:1;min-height:56px;font:inherit;padding:8px}
+ #ce{flex:1;min-height:56px;border:1px solid #bbb;padding:8px}
+</style>
+<div style="padding:16px">Assistant: how can I help?</div>
+<div class="app">
+  <form class="composer" id="f">
+    <textarea id="prompt-textarea" placeholder="Send a message to the model"></textarea>
+    <button type="button" id="send" aria-label="Send message">Send</button>
+  </form>
+  <form class="composer" id="f2" style="margin-top:8px">
+    <div id="ce" class="ProseMirror" contenteditable="true" role="textbox" aria-label="Message the model"></div>
+    <button type="button" id="send2" aria-label="Send message">Send</button>
+  </form>
+</div>
+<script>
+/*
+ * The dangerous shape, modelled as faithfully as a fixture can.
+ *
+ * ChatGPT, Claude and Gemini all use controlled editors. The component holds
+ * the text in its own state; the DOM is a projection of that state and is
+ * re-rendered from it. An extension that assigns `.value` or `.innerText`
+ * directly changes the projection and not the source, and the next render puts
+ * the secret back — while the panel has already told the user it was removed.
+ *
+ * So: these composers transmit their STATE, never their DOM. A write that does
+ * not reach state is invisible here, which is the point.
+ */
+window.__sent = [];
+
+// ── controlled textarea (React-like) ───────────────────────────────────────
+let state = '';
+const ta = document.getElementById('prompt-textarea');
+// React attaches a real listener and reads e.target.value; the native setter
+// plus a bubbling input event is what makes this fire.
+ta.addEventListener('input', (e) => { state = e.target.value; render(); });
+function render() { if (ta.value !== state) ta.value = state; }
+window.__forceRender = () => render();
+window.__state = () => state;
+document.getElementById('send').addEventListener('click', () => {
+  window.__sent.push({ how: 'click', text: state });      // STATE, not ta.value
+});
+ta.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.__sent.push({ how: 'enter', text: state }); }
+});
+
+// ── controlled contenteditable (ProseMirror-like) ──────────────────────────
+let model = '';
+const ce = document.getElementById('ce');
+// ProseMirror reads the DOM back on beforeinput/input and updates its model.
+ce.addEventListener('input', () => { model = ce.innerText; renderCe(); });
+function renderCe() { if (ce.innerText !== model) ce.textContent = model; }
+window.__forceRenderCe = () => renderCe();
+window.__model = () => model;
+document.getElementById('send2').addEventListener('click', () => {
+  window.__sent.push({ how: 'click-ce', text: model });   // MODEL, not the DOM
+});
+</script>

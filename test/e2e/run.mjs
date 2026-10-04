@@ -70,11 +70,72 @@ if (!chromium) {
  * installed (the GitHub runner puts it under ~/.cache/ms-playwright), then
  * the `chromium` channel, which also resolves to the full browser.
  */
-function findChromium() {
-  if (process.env.CHHANNI_E2E_CHROME) return { executablePath: process.env.CHHANNI_E2E_CHROME };
+/** Where each browser installs itself, per platform. */
+const BROWSER_PATHS = {
+  brave: {
+    win32: ['C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe',
+            'C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application/brave.exe',
+            join(process.env.LOCALAPPDATA || '', 'BraveSoftware/Brave-Browser/Application/brave.exe')],
+    darwin: ['/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'],
+    linux: ['/usr/bin/brave-browser', '/usr/bin/brave', '/opt/brave.com/brave/brave'],
+  },
+  chrome: {
+    win32: ['C:/Program Files/Google/Chrome/Application/chrome.exe',
+            'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'],
+    darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+    linux: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'],
+  },
+  edge: {
+    win32: ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+            'C:/Program Files/Microsoft/Edge/Application/msedge.exe'],
+    darwin: ['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'],
+    linux: ['/usr/bin/microsoft-edge'],
+  },
+};
+
+/**
+ * Find a browser that can actually load an extension.
+ *
+ * This is the line that turned the suite green locally and red on CI, so it is
+ * worth being explicit about. Since Playwright 1.49 `headless: true` runs
+ * `chromium_headless_shell` by default, and the headless shell **cannot load
+ * extensions at all** — it does not fail loudly, it starts a browser where
+ * nothing is installed and every assertion about interception fails. The first
+ * version of this file hardcoded one absolute path that happened to exist on
+ * the machine it was written on, so CI silently fell through to the shell.
+ *
+ *   node test/e2e/run.mjs                 whatever Playwright has installed
+ *   node test/e2e/run.mjs --browser brave
+ *   node test/e2e/run.mjs --browser "C:/path/to/brave.exe"
+ *   CHHANNI_E2E_BROWSER=brave node test/e2e/run.mjs
+ *
+ * Brave, Edge, Opera, Arc and Vivaldi are Chromium at the same extension API
+ * level, so the same fifteen assertions are meaningful in all of them. Running
+ * them there is the only way to find out whether that is true in practice —
+ * Brave in particular ships Shields below the layer an extension can reach.
+ */
+function findBrowser() {
+  const flag = process.argv.indexOf('--browser');
+  const want = (flag !== -1 ? process.argv[flag + 1] : process.env.CHHANNI_E2E_BROWSER || '').trim();
+
+  if (want && (want.includes('/') || want.includes('\\'))) {
+    if (!existsSync(want)) throw new Error(`--browser ${want} does not exist`);
+    return { executablePath: want, label: want };
+  }
+  if (want) {
+    const known = BROWSER_PATHS[want.toLowerCase()];
+    if (!known) throw new Error(`unknown browser "${want}" — try brave, chrome, edge, or a full path`);
+    for (const p of known[process.platform] || []) {
+      if (p && existsSync(p)) return { executablePath: p, label: `${want} (${p})` };
+    }
+    throw new Error(`${want} is not installed where this expects it on ${process.platform}. `
+      + `Pass the full path: --browser "<path to the executable>"`);
+  }
+
   const roots = [
     process.env.PLAYWRIGHT_BROWSERS_PATH,
-    join(process.env.HOME || '', '.cache', 'ms-playwright'),
+    join(process.env.HOME || process.env.USERPROFILE || '', '.cache', 'ms-playwright'),
+    join(process.env.LOCALAPPDATA || '', 'ms-playwright'),
     '/opt/pw-browsers',
     '/ms-playwright',
   ].filter(Boolean);
@@ -86,13 +147,16 @@ function findChromium() {
       for (const rel of ['chrome-linux/chrome', 'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
                          'chrome-win/chrome.exe']) {
         const p = join(root, dir, rel);
-        if (existsSync(p)) return { executablePath: p };
+        if (existsSync(p)) return { executablePath: p, label: `playwright chromium (${p})` };
       }
     }
   }
-  return { channel: 'chromium' };
+  return { channel: 'chromium', label: 'chromium channel' };
 }
-const browser = findChromium();
+let browser;
+try { browser = findBrowser(); }
+catch (err) { console.error(red(`e2e: ${err.message}`)); process.exit(1); }
+const { label: browserLabel, ...launchBrowser } = browser;
 
 if (!existsSync(join(root, 'dist', 'chrome', 'engine', 'detect.js'))) {
   console.error(red('e2e: dist/chrome is missing or incomplete. Run `node scripts/build.js` first.'));
@@ -115,7 +179,9 @@ cpSync(join(root, 'dist', 'chrome'), EXT, { recursive: true });
 
 process.on('exit', () => { try { rmSync(work, { recursive: true, force: true }); } catch {} });
 
-const PORT = 8899;
+// Port 0, not a fixed number: a hardcoded port makes two runs on one machine
+// collide with EADDRINUSE, and on a developer's laptop something else may hold
+// it already. The fixture server has no reason to be findable.
 const server = createServer((q, s) => {
   let body;
   try { body = readFileSync(join(PAGES, q.url === '/' ? 'app-textarea.html' : q.url.split('?')[0])); }
@@ -123,7 +189,8 @@ const server = createServer((q, s) => {
   s.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
   s.end(body);
 });
-await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
+await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const PORT = server.address().port;
 
 const CRC_TABLE = (() => {
   const t = new Int32Array(256);
@@ -153,7 +220,7 @@ const failures = [];
 async function preflight() {
   const profile = join(work, 'preflight');
   const ctx = await chromium.launchPersistentContext(profile, {
-    headless: true, ...browser,
+    headless: true, ...launchBrowser,
     permissions: ['clipboard-read', 'clipboard-write'],
     viewport: { width: 1000, height: 800 },
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
@@ -164,10 +231,16 @@ async function preflight() {
     await p.goto(`http://localhost:${PORT}/app-textarea.html`);
     await p.waitForTimeout(READY_MS);
 
+    // Polled, not slept. A fixed wait here made the preflight itself flaky,
+    // and a guard that fails at random is worse than no guard: it teaches
+    // whoever sees it to re-run until it passes, which is the habit that lets
+    // a real failure through.
+
     // 1. the mock provider works at all
     await p.locator('#prompt-textarea').fill('hello');
     await p.locator('#send').click();
-    await p.waitForTimeout(400);
+    await p.waitForFunction(() => (window.__sent || []).length === 1, null, { timeout: 5000 })
+      .catch(() => {});
     const clean = await p.evaluate(() => (window.__sent || []).length);
     if (clean !== 1) {
       throw new Error(`the mock provider recorded ${clean} sends for a clean message, expected 1 — the fixture is broken, not the extension`);
@@ -178,12 +251,13 @@ async function preflight() {
     await p.locator('#prompt-textarea').fill('');
     await p.locator('#prompt-textarea').click();
     await p.keyboard.press('ControlOrMeta+V');
-    await p.waitForTimeout(900);
+    await p.waitForFunction(() => !!document.querySelector('.chhanni-panel'), null, { timeout: 5000 })
+      .catch(() => {});
     const panel = await p.evaluate(() => !!document.querySelector('.chhanni-panel'));
     const value = await p.locator('#prompt-textarea').inputValue();
     if (!panel || value.includes(KEY)) {
       throw new Error('the extension did not intercept a known credential — it is probably not loaded. '
-        + `Browser: ${JSON.stringify(browser)}. Playwright's headless shell cannot load extensions; `
+        + `Browser: ${browserLabel}. Playwright's headless shell cannot load extensions; `
         + 'a full Chromium is required.');
     }
   } finally {
@@ -192,7 +266,7 @@ async function preflight() {
   }
 }
 
-console.log(dim(`browser: ${browser.executablePath || `channel ${browser.channel}`}`));
+console.log(dim(`browser: ${browserLabel}`));
 try {
   await preflight();
   console.log(dim('preflight: the extension is loaded and intercepting\n'));
@@ -206,7 +280,7 @@ try {
 async function test(name, page, body) {
   const profile = join(work, `p-${Math.random().toString(36).slice(2)}`);
   const ctx = await chromium.launchPersistentContext(profile, {
-    headless: true, ...browser,
+    headless: true, ...launchBrowser,
     permissions: ['clipboard-read', 'clipboard-write'],
     viewport: { width: 1000, height: 800 },
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
@@ -432,6 +506,61 @@ await test('an uninspectable file is named, not passed silently', 'app-textarea.
   });
   await p.waitForTimeout(3000);
   t.ok(await noticeUp(p), 'nothing told the user the file was not read');
+});
+
+// ─────────────────────────────── the composer's state, not its appearance
+//
+// The failure this is for: Chhanni replaces what the user *sees* with a
+// placeholder, the panel honestly reports that it did, and the editor's own
+// state still holds the original — so the provider receives the secret behind
+// an accurate warning. Every real AI composer is a controlled component, and
+// `writeComposer()` goes out of its way to write through the native setter and
+// execCommand for exactly this reason.
+//
+// app-controlled.html transmits its STATE and never its DOM, so a write that
+// does not reach state is invisible to it. These two cases fail if the
+// write-back is cosmetic.
+
+await test('redaction reaches a controlled textarea\'s state, not just its DOM', 'app-controlled.html', async (p, t) => {
+  await p.evaluate((s) => navigator.clipboard.writeText(s), SECRET);
+  await p.locator('#prompt-textarea').click();
+  await p.keyboard.press('ControlOrMeta+V');
+  await p.waitForTimeout(900);
+  t.ok(await panelUp(p), 'the paste was not intercepted');
+  await p.locator('.chhanni-panel .chhanni-primary').click();   // Redact and continue
+  await p.waitForTimeout(600);
+
+  const shown = await p.locator('#prompt-textarea').inputValue();
+  const held = await p.evaluate(() => window.__state());
+  t.ok(!shown.includes(KEY), 'the key is still visible in the composer');
+  t.ok(!held.includes(KEY), `the DOM was corrected but the component state still holds the key: ${JSON.stringify(held.slice(0, 80))}`);
+
+  // A re-render is what exposes a cosmetic write: the component paints its own
+  // state back over whatever the DOM happens to say.
+  await p.evaluate(() => window.__forceRender());
+  const after = await p.locator('#prompt-textarea').inputValue();
+  t.ok(!after.includes(KEY), 'the key came back on the next render');
+
+  await p.locator('#send').click();
+  await p.waitForTimeout(400);
+  const sentText = await p.evaluate(() => (window.__sent[0] || {}).text || '');
+  t.ok(!sentText.includes(KEY), 'the provider received the key from component state');
+});
+
+await test('redaction reaches a controlled contenteditable\'s model', 'app-controlled.html', async (p, t) => {
+  await p.evaluate((s) => navigator.clipboard.writeText(s), SECRET);
+  await p.locator('#ce').click();
+  await p.keyboard.press('ControlOrMeta+V');
+  await p.waitForTimeout(900);
+  t.ok(await panelUp(p), 'the paste into the contenteditable was not intercepted');
+  await p.locator('.chhanni-panel .chhanni-primary').click();
+  await p.waitForTimeout(600);
+
+  const model = await p.evaluate(() => window.__model());
+  t.ok(!model.includes(KEY), `the editor model still holds the key: ${JSON.stringify(model.slice(0, 80))}`);
+  await p.evaluate(() => window.__forceRenderCe());
+  const after = await p.evaluate(() => document.getElementById('ce').innerText);
+  t.ok(!after.includes(KEY), 'the key came back on the next render');
 });
 
 // ────────────────────────────────────────────────────────── where it runs
