@@ -774,3 +774,69 @@ means a reply that is never scanned, and a silent miss is not an acceptable
 price for a second of smoothness on a slow machine. What is in place is honest
 about its cost; what would replace it must be provably honest about its
 coverage first.
+
+---
+
+### 36. Decode what is decodable; do not normalise what needs a position map
+
+**Context.** Measured on `AWS_ACCESS_KEY_ID=AKIA…`, nine of fourteen encodings
+of the same assignment produced verdict `clean`. Base64 was one of them, which
+matters more than the others combined: a Kubernetes Secret's values are always
+Base64, so the single most common way a real credential appears in text a
+developer pastes was the way this engine could not see.
+
+The engine already knew how to decode. `decodesToText()` has been in
+`rules.js` since the entropy detector shipped, and it is used to decide that a
+high-entropy value is "an encoded config" and therefore *not* worth reporting.
+The capability existed and was pointed at suppression.
+
+**Decision.** `src/encoded.js` finds decodable runs — Base64, Base64url,
+percent-encoding, hex, HTML numeric entities, `\x`/`\u` escapes — decodes
+them, and hands the result back to `scan()`. Nothing in it knows what a secret
+looks like; the detectors stay the single source of truth.
+
+Three constraints, each a constraint rather than a nicety:
+
+- **It can only add.** A decode never clears a finding, lowers a severity, or
+  turns `partial` coverage into `clean`. If a decode is wrong the worst case is
+  a finding nobody wanted, never a secret waved through. A test asserts it.
+- **It is bounded.** 64 candidate runs, 256 KB decoded, two decode layers (a
+  Secret holding a kubeconfig needs two; a third is somebody probing), and a
+  minimum run of 24 characters so a UUID is not decoded on every sighting.
+- **It says the finding was encoded.** The span is the *encoded run*, because
+  a value that is not literally in the text cannot be replaced by itself. So
+  `match` is the run, redaction swaps the whole encoded value for a
+  placeholder, `preview` masks what was inside, and `fingerprint` digests the
+  decoded value — so the same key recognises itself whether it arrived plainly
+  or Base64'd.
+
+**What it cost, which is the part that decided it.** On 88,166 files and 412.8
+MB of real source: 7,958 findings before and 7,958 after, 342 alarms (0.39%)
+before and 342 after, throughput 6.1 → 4.5 MB/s. Identical detection on
+ordinary code, 26% slower. Strictly more coverage on encoded secrets for no
+false positives at all is a trade worth taking; the threshold is what buys it
+(`critical` and `high`, nothing advisory — an email in a Base64 blob is a test
+fixture).
+
+**What was deliberately not built: a normalisation layer.** Three cases remain
+uncaught and they share a cause.
+
+- A key split across a `\` line continuation is two fragments; no detector can
+  match either half.
+- A key written in fullwidth or confusable characters needs NFKC.
+- Both of these are *normalisations* rather than encodings: they rewrite the
+  text everywhere rather than inside a delimited run, which means reporting a
+  position in the original requires a cumulative index map from the normalised
+  copy back to it. Without that map, a finding's span is wrong, and a wrong
+  span means redaction removes the wrong characters — which is worse than not
+  finding the secret, because it looks like success.
+
+That map is buildable and is the right next step for this layer. It is not
+worth building halfway, and the second case is the weaker motive anyway: it is
+a deliberate evasion rather than a format somebody's tooling produces, and the
+person Chhanni protects is not the person it would be fighting.
+
+**Also not done, and stated so nobody infers it:** a secret inside a gzip or
+zlib stream inline in a prompt is not decompressed (files are different — a
+`.docx` is a ZIP and is extracted), and an encrypted value is not readable at
+all.

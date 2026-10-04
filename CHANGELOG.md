@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+### A Kubernetes Secret is Base64, and Chhanni could not read one
+
+Measured on `AWS_ACCESS_KEY_ID=AKIA…`: **nine of fourteen encodings of the
+same assignment produced verdict `clean`.** Base64 was one of them, and that
+one matters more than the rest combined — a Secret's `data:` values are
+*always* Base64, so "why isn't my pod picking this up?" followed by the
+manifest was a live credential in a prompt that no pattern could see. Same for
+a `Basic` auth header, `client-key-data` in a kubeconfig, a `.env` file
+Base64'd for a CI variable, a `data:` URI.
+
+The sharpest part: the engine already knew how to decode. `decodesToText()`
+has been in `rules.js` since the entropy detector shipped, where it decides
+that a high-entropy value is "an encoded config" and therefore *not* worth
+reporting. The machinery was there and pointed at suppression.
+
+`src/encoded.js` now finds decodable runs — Base64, Base64url,
+percent-encoding, hex, HTML entities, `\x` escapes — decodes them and hands
+the result to the same detectors. Nothing in it knows what a secret looks
+like.
+
+    before                                now
+    plain                 caught          caught
+    Base64                clean           caught
+    Base64url             clean           caught
+    percent-encoded       clean           caught
+    hex                   clean           caught
+    HTML entities         clean           caught
+    \x escapes            clean           caught
+    inside a data: URI    clean           caught
+    Base64 of Base64      clean           caught
+
+What it cost, on 88,166 files and 412.8 MB of real source from twenty public
+repositories: **7,958 findings before and 7,958 after; 342 alarms (0.39%)
+before and 342 after.** Identical detection on ordinary code, 26% slower
+(6.1 → 4.5 MB/s). The threshold is what buys that — only `critical` and
+`high`, nothing advisory, because an email inside a Base64 blob is a test
+fixture and an AWS key inside one is a Secret.
+
+Redaction replaces the whole encoded value, because a secret that is not
+literally in the text cannot be replaced by itself: `creds: QVdTX0FDQ0VT…`
+becomes `creds: <AWS_ACCESS_KEY_ID_1>`. The manifest stays readable, the value
+is gone, and it is no longer valid Base64 — which the finding says.
+
+Three cases are still missed and are not oversights: a key split across a `\`
+line continuation, a key written in fullwidth characters, and a key inside a
+gzip stream. The first two need a normalisation pass with a position map back
+to the original, and a wrong span means redaction removing the wrong
+characters — worse than a miss, because it looks like success. [Decision
+36](docs/DECISIONS.md) records the design rather than half-building it.
+
+`--no-decode` on the CLI, `{ decode: false }` in the library.
+
+
 A performance suite, and the three defects it found were not performance
 defects. Every fixture in the browser suite was a static page, and the
 response scanner is driven by a MutationObserver — so on a static page it is
@@ -104,7 +157,7 @@ past the budget this project set, and is recorded rather than quietly
 re-budgeted. [Decision 35](docs/DECISIONS.md) says what the fix is and why it
 is not in this change.
 
-- 115 tests, 27 browser cases, and a performance suite with budgets.
+- 135 tests, 27 browser cases, and a performance suite with budgets.
 
 ## 0.4.0 — 2026-10-01
 

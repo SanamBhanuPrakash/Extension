@@ -834,6 +834,24 @@ await test('a malformed stored policy does not let content through', 'app-textar
  * other e2e fixtures could not either, because they are static, and against a
  * static page the scanner is correct and idle for the same reason.
  */
+await test('a Kubernetes Secret does not reach the provider', 'app-textarea.html', async (p, t) => {
+  // A Secret's data values are always Base64 — that is the format, not an
+  // evasion — and before `src/encoded.js` existed this whole manifest scanned
+  // `clean` and went straight through. The assertion is on what the mock
+  // provider received, not on whether a panel appeared.
+  //
+  // Typed rather than pasted, and then sent: a paste raises the panel over the
+  // Send button, and the claim worth proving here is about the submit guard,
+  // not about the paste handler that other cases already cover.
+  const b64 = Buffer.from(SECRET).toString('base64');
+  const manifest = `apiVersion: v1\nkind: Secret\nmetadata:\n  name: app\ndata:\n  creds: ${b64}\n`;
+  await p.locator('#prompt-textarea').fill(manifest);
+  await p.locator('#send').click();
+  await p.waitForTimeout(900);
+  t.ok(await panelUp(p), 'no panel was shown for a Secret manifest');
+  t.equal(JSON.stringify(await sent(p)), '[]', 'the manifest reached the provider');
+});
+
 await test('a credential streamed into a reply is reported', 'app-live.html', async (p, t) => {
   await p.evaluate((reply) => window.__stream(reply, { chunk: 8, every: 20 }),
     `Set AWS_ACCESS_KEY_ID=${KEY} in the environment and restart the worker. `

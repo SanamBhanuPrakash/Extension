@@ -183,6 +183,83 @@ on the first draft, 234 on the last, in 18 files.
 It is `medium`, never `critical`. The honest statement is *this looks like a
 key and nothing here says what it is*, and that is a question for you.
 
+### Secrets that arrive encoded
+
+A Kubernetes Secret's `data:` values are **always** Base64. That is the
+format, not an evasion. So "why isn't my pod picking this up?" followed by the
+manifest is a live credential in a prompt, and until now every pattern in
+`rules.js` looked straight past it. The same is true of a `Basic` auth header,
+of `client-key-data` in a kubeconfig, of a `.env` file Base64'd for a CI
+variable, and of a `data:` URI.
+
+Measured on `AWS_ACCESS_KEY_ID=AKIA…`, before and after:
+
+| | before | now |
+|---|---|---|
+| plain | caught | caught |
+| Base64 | **clean** | caught |
+| Base64 with a label in front | **clean** | caught |
+| Base64url | **clean** | caught |
+| percent-encoded | **clean** | caught |
+| hex | **clean** | caught |
+| HTML entities | **clean** | caught |
+| `\x41` string escapes | **clean** | caught |
+| inside a `data:` URI | **clean** | caught |
+| Base64 of Base64 | **clean** | caught |
+| JSON-escaped in a string | caught | caught |
+| YAML block scalar | caught | caught |
+| split across a line continuation | **clean** | **clean** |
+| written in fullwidth characters | **clean** | **clean** |
+| inside a gzip stream | **clean** | **clean** |
+
+Nine of fourteen went through silently, and the sharpest part of the finding is
+that the engine already knew how. `decodesToText()` has been in `rules.js`
+since the entropy detector shipped — it decodes Base64 to decide whether a
+high-entropy value is "an encoded config" and therefore *not* worth reporting.
+The machinery was there and pointed the wrong way: it could decode, and it used
+that only to stay quiet.
+
+**What it costs, measured on 88,166 files and 412.8 MB of real source from
+twenty public repositories:**
+
+| | decoding off | decoding on |
+|---|---|---|
+| findings | 7,958 | 7,958 |
+| would raise the panel | 342 (0.39%) | 342 (0.39%) |
+| throughput | 6.1 MB/s | 4.5 MB/s |
+
+Identical findings, identical alarm rate, 26% slower. The reason there are no
+new false positives is the threshold: only `critical` and `high`, nothing
+advisory. An email address inside a Base64 blob is a test fixture; an AWS key
+inside one is a Kubernetes Secret. `--no-decode` on the CLI and
+`{ decode: false }` in the library turn it off.
+
+**What it does not do, and these are not oversights:**
+
+*A line continuation.* `AKIA\` + newline + the rest is two fragments, and no
+detector can match either half. Joining them needs a normalisation pass with a
+position map back to the original, which is real machinery and is recorded as
+[decision 36](DECISIONS.md) rather than half-built.
+
+*Fullwidth and confusable characters.* Same machinery, and lower value: this is
+a deliberate evasion rather than a format anybody's tooling produces, and the
+person Chhanni protects is not the person it would be fighting.
+
+*Compression.* A secret inside a gzip or zlib stream in pasted text is not
+read. Files are a different matter — a `.docx` is a ZIP and is extracted — but
+a compressed blob inline in a prompt is not decompressed.
+
+*Encryption.* Obviously, and worth saying once: an encrypted value is not a
+value this can read, and nothing here should be read as implying otherwise.
+
+**Redaction replaces the whole encoded value.** A secret that is not literally
+in the text cannot be replaced by itself, so pressing redact on a Kubernetes
+Secret turns `creds: QVdTX0FDQ0VT…` into `creds: <AWS_ACCESS_KEY_ID_1>`. The
+manifest stays readable and the value is gone; it is no longer valid Base64,
+which is the honest consequence and the panel says so on the finding.
+
+---
+
 ### A check digit can never reach zero false positives
 
 Verhoeff accepts about one random twelve-digit number in ten. Luhn accepts

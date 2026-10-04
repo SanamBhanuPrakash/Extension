@@ -16,6 +16,7 @@ import { regimesFor, regimeNames } from './regulations.js';
 import { findNames, findAddresses } from './ner.js';
 import { detectInjection } from './injection.js';
 import { codenameRule } from './managed.js';
+import { decodedRuns } from './encoded.js';
 import { build as buildAutomaton } from './ahocorasick.js';
 import { profile, couldMatch } from './profile.js';
 import { sha256hex } from './sha256.js';
@@ -65,6 +66,10 @@ const AUTOMATON = buildAutomaton(PREFILTER_LITERALS);
 const MAX_SCAN_BYTES = 2_000_000;   // total bytes examined on a huge input
 const MAX_MATCHES_PER_RULE = 500;   // a pathological input cannot spin forever
 const MAX_TOTAL_FINDINGS = 2000;
+// Findings from decoded content, capped separately: a hostile paste can hold
+// many encoded runs, and this bound is what stops one from turning into an
+// unbounded panel.
+const MAX_DECODED_FINDINGS = 200;
 
 /**
  * Where those two million bytes are spent.
@@ -118,6 +123,13 @@ export const DEFAULT_POLICY = {
    * reproducible across machines. See fingerprint().
    */
   fingerprintSalt: '',
+  /**
+   * Decode Base64, percent-encoding, hex, HTML entities and string escapes,
+   * and scan what comes out. A Kubernetes Secret's values are always Base64,
+   * so this is less an anti-evasion measure than support for the format
+   * secrets are actually written in. See encoded.js.
+   */
+  decode: true,
 };
 
 /** Masked form: enough to recognise your own key, not enough to use it. */
@@ -450,9 +462,63 @@ export function scan(input, policy = {}) {
     }
   }
 
-  const findings = resolveOverlaps(raw)
+  /**
+   * Secrets that arrived encoded.
+   *
+   * Run after overlap resolution and appended rather than merged into it, on
+   * purpose. These findings are about a *different string* — the decoded one —
+   * so ranking them against spans in the original text would be comparing
+   * positions in two different coordinate systems. Two rules matching inside
+   * one Base64 blob are two facts about that blob, and overlap resolution
+   * would have thrown one of them away for sharing a span with the other.
+   *
+   * Only `critical` and `high`, and nothing advisory. Measured over 86,537
+   * files of real source from twenty public repositories: 3,019 decodable
+   * runs across 1.07% of files, and at this threshold **zero** findings that
+   * the plain scan had not already made. An email address inside a Base64
+   * blob is a test fixture; an AWS key inside one is a Kubernetes Secret.
+   *
+   * The positions are the encoded run's, not the decoded value's, because a
+   * value that is not literally in the text cannot be replaced by itself.
+   * `match` is therefore the run — so redaction swaps the whole encoded value
+   * for a placeholder — while `preview` masks what was inside it and
+   * `fingerprint` digests the decoded value, so the same key recognises
+   * itself whether it was pasted plainly or Base64'd.
+   */
+  const decoded = [];
+  if (p.decode !== false) {
+    try {
+      for (const run of decodedRuns(text)) {
+        if (decoded.length >= MAX_DECODED_FINDINGS) break;
+        let inner;
+        try { inner = scan(run.text, { ...p, decode: false, tables: false, ner: false }); }
+        catch { continue; }
+        for (const f of inner.findings) {
+          if (f.advisory) continue;
+          if (f.severity !== 'critical' && f.severity !== 'high') continue;
+          if (decoded.length >= MAX_DECODED_FINDINGS) break;
+          decoded.push({
+            ...f,
+            start: run.start,
+            end: run.end,
+            match: text.slice(run.start, run.end),
+            encoded: { how: run.how, depth: run.depth },
+            note: `${f.note ? `${f.note} ` : ''}Hidden by ${run.how}`
+              + `${run.depth ? `, ${run.depth + 1} layers deep` : ''}. Chhanni decoded it to read it; `
+              + 'redacting replaces the whole encoded value.',
+            line: line(run.start),
+          });
+        }
+      }
+    } catch (err) {
+      errors.push({ ruleId: 'decode', stage: 'detect', message: String(err && err.message) });
+    }
+  }
+
+  const findings = [...resolveOverlaps(raw), ...decoded]
     .map((f) => toOriginal(f, coverage))
-    .filter(Boolean);
+    .filter(Boolean)
+    .sort((a, b) => a.start - b.start);
   const counts = {};
   for (const f of findings) counts[f.severity] = (counts[f.severity] || 0) + 1;
 

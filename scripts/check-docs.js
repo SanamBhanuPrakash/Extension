@@ -29,6 +29,21 @@ const dim = (s) => c('2', s);
 const problems = [];
 const checks = [];
 
+/** Like check(), but only the first match: the newest entry in a changelog. */
+function checkFirst(what, actual, where, pattern) {
+  const text = read(where);
+  const first = [...text.matchAll(pattern)][0];
+  if (!first) {
+    problems.push(`${where}: no "${what}" figure found at all — the check itself has rotted`);
+    return;
+  }
+  if (Number(first[1]) !== actual) {
+    problems.push(`${where}: the newest entry says ${first[1]} ${what}, code says ${actual}`);
+  } else {
+    checks.push(`${what}: ${actual} ${dim(`(newest entry in ${where})`)}`);
+  }
+}
+
 function check(what, actual, where, pattern) {
   const text = read(where);
   const found = [...text.matchAll(pattern)].map((m) => Number(m[1]));
@@ -58,7 +73,12 @@ if (!tests) {
   problems.push('found no tests at all — the check itself has rotted');
 } else {
   check('tests', tests, 'README.md', /# (?:tests|pass) (\d+)/g);
-  check('tests', tests, 'CHANGELOG.md', /^- (\d+) tests,/gm);
+  // Only the newest entry. A released changelog entry states what was true at
+  // that release, and a guard that demands every historical line match the
+  // current count is a guard that asks for history to be rewritten — which
+  // this one did, for three entries, the first time the test count moved
+  // after it was written.
+  checkFirst('tests', tests, 'CHANGELOG.md', /^- (\d+) tests,/gm);
 }
 
 // ── detectors, and the ones that prove rather than match a shape ─────────

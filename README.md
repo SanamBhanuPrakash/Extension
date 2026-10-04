@@ -316,7 +316,7 @@ Add-ons are free. Store assets are generated at the required sizes in
 | [PRIOR-ART](docs/PRIOR-ART.md) | Who did this first, who sells it, what this lacks |
 | [ROADMAP](docs/ROADMAP.md) | Where the exposure is, and what is genuinely left |
 | [PUBLISHING](docs/PUBLISHING.md) | Store requirements, fees, listing copy |
-| [DECISIONS](docs/DECISIONS.md) | Thirty-five decision records, each with its cost |
+| [DECISIONS](docs/DECISIONS.md) | Thirty-six decision records, each with its cost |
 | [CHANGELOG](CHANGELOG.md) · [PRIVACY](PRIVACY.md) | |
 
 ## What it does not do
@@ -362,8 +362,8 @@ states is a boundary everybody crosses. The short version:
 
 ```console
 $ node --test test/*.test.js
-# tests 115
-# pass 115
+# tests 135
+# pass 135
 ```
 
 Checksums against known-good and known-bad vectors, a proof that the

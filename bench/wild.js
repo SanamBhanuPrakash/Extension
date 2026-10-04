@@ -23,6 +23,13 @@ const root = process.argv[2] || '/tmp/claude-0/wild';
 const show = process.argv.includes('--show');
 /** `--rule <id>` prints every sample for one detector, for tuning it. */
 const only = process.argv.includes('--rule') ? process.argv[process.argv.indexOf('--rule') + 1] : null;
+/**
+ * `--no-decode` runs with encoded-content scanning off, so the cost of
+ * decoding can be read as a difference rather than asserted. The number that
+ * matters is not the alarm rate with decoding on; it is how much decoding
+ * moved it.
+ */
+const decode = !process.argv.includes('--no-decode');
 const tty = process.stdout.isTTY && !process.argv.includes('--no-color');
 const c = (code, s) => (tty ? `\u001b[${code}m${s}\u001b[0m` : s);
 const dim = (s) => c('2', s);
@@ -75,7 +82,7 @@ for (const repo of repos) {
     // NER off: person names in CONTRIBUTORS, changelogs and copyright headers
     // are correct detections, not false ones, and would drown the signal this
     // measures — whether the credential rules fire on ordinary code.
-    const result = scan(text, { ner: false });
+    const result = scan(text, { ner: false, decode });
     // The number that decides whether anyone keeps this installed is not how
     // many findings there are but how often the panel would actually appear.
     // A file full of example email addresses produces findings and no alarm,
