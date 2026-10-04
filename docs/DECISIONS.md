@@ -626,3 +626,151 @@ the page, and WebMCP tools execute in the page with the user's session. Whether
 an extension can *interpose* on a tool call — rather than merely watch one —
 is not determined by anything readable today, and that distinction decides
 whether this is a product or a log.
+
+---
+
+### 32. Measure the extension, not the page
+
+**Context.** Nothing in this repository measured what the extension costs. A
+correct extension that makes ChatGPT feel worse gets uninstalled, and the
+uninstall reason box stays empty — so the cost is invisible right up to the
+point where it is the only thing that matters.
+
+**What the first attempt got wrong**, which is the useful part of this record.
+The first harness windowed its measurement from the `load` event and reported a
+960 ms blocking "cliff" on a 1500-turn conversation. The cliff was the
+harness's: a 1.7 MB document spends over a second in parse and layout, the
+`load` event lands somewhere inside that, and the window therefore caught a
+random amount of work the extension neither caused nor could fix. The same
+harness's fixture was static HTML, so the response scanner — driven by a
+MutationObserver — never ran a single pass. It measured an extension that was
+asleep and attributed Chromium's layout to it.
+
+**Decision.** Three rules, each of which exists because breaking it produced a
+confident wrong number:
+
+1. **Anchor on quiet, not on an event.** The clock starts after the page has
+   gone 1.2 s without a long task. Everything before that is the fixture's.
+2. **Every budget that can be is a delta** against the same page with no
+   extension loaded. At `--throttle 4` the 1500-turn fixture blocks for about
+   four seconds with nothing installed; an absolute budget there measures
+   Chromium.
+3. **Medians, not runs.** That control measured 3,982 / 4,357 / 4,810 ms across
+   three identical runs. A 250 ms budget against an 800 ms swing is a gate that
+   fails at random, which teaches whoever sees it to re-run until it passes —
+   the habit that lets a real failure through.
+
+**Consequence.** `npm run test:perf` is a gate in CI at 1x. `--throttle 4` is
+an investigation tool and deliberately not a gate, for reason 3; it is where
+the starvation, the ordering and the `storage.managed` defects were found.
+
+---
+
+### 33. An administrator's policy is an override, not a precondition
+
+**Context.** The bootstrap read two things before declaring itself ready: the
+person's settings from `storage.sync`, and an organisation's from
+`storage.managed`. Reading both before going ready is the obviously correct
+order — the administrator's policy is the one that wins, so apply it before
+protecting anything.
+
+**What that cost.** `storage.managed.get(null)` resolves through an IPC to the
+browser process whose reply is dispatched on the renderer's main thread.
+Measured on a 1500-turn thread: 3.0 s with the renderer idle, and **57.8 s**
+with a reply streaming and an indicator ticking at 4x throttle. For that whole
+time `engineState` was `loading`, which is fail-closed and perfectly safe —
+every paste was held with "still starting, that was held, not checked" — and
+completely unusable. Correct and unusable is one of the ways a security product
+gets uninstalled.
+
+**Decision.** Readiness depends on the person's settings only. A profile that
+has never seen managed policy goes ready and reads managed in the background;
+if managed policy turns out to exist, that fact is written to `storage.local`
+and every later load waits for it, with a 4 s cap so a stalled policy service
+cannot hold the page open. `storage.onChanged` fires for the managed area, so
+even the first load after a policy is deployed picks it up when it lands.
+
+**What this gives up, stated plainly.** On a managed profile's first load after
+a policy appears, Chhanni runs on the person's own settings until the managed
+read lands. Managed policy in practice tightens — a stricter mode, extra
+required detectors, an allowlist the person cannot edit — so the window is one
+where Chhanni may be *less strict than the administrator intends*, not one where
+it is off. The alternative was a product that holds every paste for a minute on
+a long conversation, for every user, to close a window that affects one page
+load per managed profile.
+
+---
+
+### 34. A cap that fires silently is the bug this product exists to prevent
+
+**Context.** Reading the page's replies means `document.body.innerText` plus a
+sweep of open shadow roots, and the sweep is capped at 20,000 elements and 200
+roots. Walking the history of a conversation is capped at 120,000 characters.
+Both caps are necessary: an extension inside somebody else's DOM has no
+business making an unbounded traversal, and a 1.7 MB transcript is seconds of
+scanning however politely it is scheduled.
+
+**The problem.** Every one of those caps used to fire silently. The sweep was
+skipped entirely above 20,000 elements and the loop broke out above 200 roots,
+with no record either happened, and the result was reported the same way a
+complete read was. *We stopped looking* presented as *nothing found* — which is
+the exact substitution this product exists to catch, committed by the product.
+
+**Decision.** Each cap records why it fired, and the popup states it on the tab
+it happened on. The unread-history figure is derived from the walk's cursor
+rather than from the budget, because an earlier version stored the budget's
+floor once and would have claimed the recent history was read on a page too
+busy for the walk to have moved at all.
+
+**Scope, so this is not read as bigger than it is.** These caps are on reading
+the page's own replies. What you put in the composer is scanned in full, and
+none of this changes that.
+
+---
+
+### 35. Reading the whole transcript to find the end of it
+
+**Context.** The response scanner needs the newest text on the page. It gets it
+by reading `document.body.innerText` and taking the part past a character
+offset, which means the cost of finding a 2 KB reply is the cost of building a
+string of the entire conversation.
+
+**What that costs, measured.** On a 1500-turn thread (1.7 MB, 17,505 elements):
+8 ms a read on a desktop, 43 ms with the renderer throttled 4x. Three
+strategies were compared at 4x — `innerText` on a dirty layout 62 ms,
+`textContent` 62 ms, a `TreeWalker` over text nodes 71 ms — which settles what
+the cost actually is. It is not the forced layout; it is building a 1.7 MB
+string. No read strategy is cheaper, because they all read everything.
+
+The mitigations that are in place are real but second-best: the read is cached
+for the length of a burst of work, the pass interval is derived from what a
+pass costs so the scanner holds to a fixed share of the main thread, and the
+history walk has a CPU budget rather than only a byte budget. Together they
+leave about 1.3 s of added blocking across a streaming reply at 4x on that
+fixture, down from a point where the same measurement swung past five seconds —
+but still scaling with the length of the conversation, which is the property
+that should not be there.
+
+**The fix, and why it is not in this change.** Read only the tail: walk the
+transcript container's children from the end, accumulating text until there is
+enough, so the cost is proportional to what is read and not to what exists.
+That requires giving up character offsets as the way progress is tracked, and
+the replacement has to be exact. Two candidates, both with a sharp edge:
+
+- *Match the overlap by content* — remember the last few thousand characters
+  scanned and find them in the next read. On a transcript with long repeated
+  passages, `lastIndexOf` can land on a later occurrence than the true one, and
+  the text between is never scanned.
+- *Mark the position structurally* — hold a reference to the last element
+  scanned and its text length at that moment. Exact, and it needs a way to find
+  the container that holds the turns, on twenty-three products that do not
+  agree about their DOM, with a fallback for when the marked element is
+  recycled by virtual scrolling.
+
+**Decision.** Keep the whole-text read, with the three mitigations, and state
+the residual cost in LIMITATIONS §15d. The second candidate is the right
+design and is worth doing properly rather than quickly: a mark that is wrong
+means a reply that is never scanned, and a silent miss is not an acceptable
+price for a second of smoothness on a slow machine. What is in place is honest
+about its cost; what would replace it must be provably honest about its
+coverage first.

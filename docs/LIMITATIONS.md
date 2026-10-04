@@ -596,6 +596,166 @@ has to stay usable.
 
 ---
 
+## 15d. What it costs to be on the page, and what the page costs by itself
+
+An extension that is correct and slow gets uninstalled, and the uninstall
+reason box stays empty. Nobody reports "your content script forces a layout
+every 1.2 seconds"; they notice the chat feels worse since they installed
+something. So `test/perf/run.mjs` measures the cost on conversations the size
+real ones reach, against budgets that fail the build.
+
+Two things had to be true before any of those numbers meant anything.
+
+**The window starts from quiet, not from `load`.** A 1500-turn page spends over
+a second in parse and layout. That is the page's cost and not ours, and
+windowing from `load` put a random part of it in the measurement — the first
+version of this suite reported a 960 ms "cliff" that was entirely its own
+windowing.
+
+**The fixture has to move.** The response scanner is driven by a
+MutationObserver, so against static HTML it never runs once. The first version
+of this suite reported the cost of an extension that was asleep.
+
+Measured in Chromium, median of three runs, on the committed fixtures:
+
+| | 50 turns | 600 turns | 1500 turns |
+|---|---|---|---|
+| page text | 57 KB | 685 KB | 1.7 MB |
+| elements | 589 | 7,005 | 17,505 |
+| one `innerText` read | 0.2 ms | 2.8 ms | 8.2 ms |
+| blocking added over 5 s idle | +0 ms | +0 ms | +0 ms |
+| blocking added while a reply streams | +0 ms | +0 ms | +0 ms |
+| paste to verdict, over the page's own | −1 ms | +11 ms | +35 ms |
+| Send held, over the page's own click | +7 ms | +27 ms | +34 ms |
+| a credential in a streamed reply is reported after | 2.8 s | 2.9 s | 3.0 s |
+
+Every figure that can be is stated **over the same page with no extension
+loaded**, and that is not a presentational choice. With the renderer throttled
+4x, the 1500-turn fixture blocks the main thread for about four seconds while a
+reply streams *with nothing installed at all*: 17,505 elements relaid out on
+every frame of an append. An absolute budget against that number is a budget on
+Chromium's layout engine, and chasing it would mean deleting features to fix a
+cost that was never ours.
+
+**What the throttled runs are for, and what they say.** `--throttle 4`
+approximates a shared CI runner or a laptop with a build running. It is an
+investigation tool rather than a gate, because at 4x the control itself swings
+3,982 / 4,357 / 4,810 ms across three identical runs, and a delta budget of
+250 ms against a control that moves 800 ms is a coin toss dressed as a gate.
+It is where three of the defects below were found.
+
+It also carries the one number on this page that is not comfortable. On the
+1500-turn fixture at 4x, median of five runs, Chhanni adds **about 1.3 s of
+blocking across a streaming reply and the four seconds after it** — on top of
+the page's own 3.7 s — and about 80 ms over five seconds of an idle tab. Paste
+and Send stay within budget (+168 ms and +135 ms). So: on a slow machine, with
+a 1.7 MB conversation, while a reply is streaming, this extension is part of
+why that page is not smooth. It is not most of why, and the budgets at 1x are
+met with room to spare, but the honest summary is that the response scanner's
+cost still scales with the length of the conversation.
+
+The fix for that is known and deliberately not done yet — see decision 35. It
+is to stop reading the whole transcript to find the end of it, which needs a
+structural mark in the DOM rather than a character offset, and a mark that is
+wrong would mean a reply that is never scanned. A miss is not an acceptable
+cost for a second of smoothness, so it waits for a design that cannot miss.
+
+---
+
+## 15e. Three defects that only a moving page could show
+
+Each of these shipped, passed 115 unit tests, and would have passed the
+end-to-end suite as it stood, because every fixture in it was static and a
+static page is one the response scanner is correct to ignore.
+
+**The debounce had no ceiling.** The scanner's timer was cleared and reset on
+every mutation, so a page that mutates more often than the interval reset it
+forever and the scanner never ran — not late, never. Every product on the match
+list keeps something moving in the DOM: a typing indicator, a caret, a shimmer,
+a token counter. Measured with an indicator ticking every 400 ms, a reply
+carrying a credential streamed in full and nothing was said for the fifteen
+seconds the test waited. A documented feature was dead on all twenty-three
+sites it was written for. There is now a hard ceiling: a pass runs within three
+seconds of the first mutation that is still unscanned, whatever else arrives.
+
+**The newest reply was read last.** The scan mark started at zero and walked
+forward one window per pass, which is right for completeness and backwards for
+urgency: on a 1.7-million-character thread the reply that just arrived was the
+seventy-first thing the scanner looked at. Measured notice latency — 3.0 s at 50
+turns, 4.9 s at 600, 10.6 s at 1500 — a number that grew with the length of a
+transcript that was already on screen before the page loaded. Passes now read
+forward from where the text last ended, which is the new text and nothing else.
+
+**Enterprise policy was on the critical path for everybody.** The bootstrap
+awaited `chrome.storage.managed.get(null)` before the engine would admit to
+being ready. That read resolves through an IPC whose reply is dispatched on the
+renderer's main thread, and on a busy page that thread is not available:
+
+| | `storage.managed.get(null)` |
+|---|---|
+| 1500-turn thread, renderer idle | 3.0 s |
+| 1500-turn thread, reply streaming and an indicator ticking, 4x | **57.8 s** |
+
+Fifty-eight seconds — not of being wrong, because the holding listeners are
+attached long before and nothing leaks, but of a tool that answers every paste
+with *still starting, that was held*. Open a long conversation, paste a key, and
+Chhanni tells you to wait a minute. What a person actually does then is switch
+it off.
+
+Nothing can be done about a busy renderer. What can be done is to stop a policy
+nine profiles in ten do not have from gating the nine: a profile that has never
+seen managed policy goes ready on the person's own settings and reads managed in
+the background, and if it turns out to exist, that is remembered and every
+later load waits for it. `storage.onChanged` fires for the managed area too, so
+even the first load after an administrator deploys a policy picks it up when it
+lands rather than at the next navigation.
+
+**A reply only had to be critical to be worth mentioning.** The scanner
+reported `critical` findings and nothing else, and the rule table says why that
+was too narrow: a Slack incoming webhook is `high`. So is a SendGrid key, a
+Twilio key, a Notion token, a Grafana token, an IBAN — twenty-one shapes that
+are unmistakably live credentials, every one of which a model can echo back
+into a conversation, and about every one of which Chhanni said nothing at all.
+"Critical" is a severity ranking for your own outgoing message; it was never a
+definition of what matters in a reply. The scanner now reports `high` as well,
+minus three groups that would make it noise rather than signal: the ten
+advisory context detectors (an assistant discussing a negotiation would trip
+one every time), `jwt` and `bearer_header` (which match a shape, not a vendor —
+a reply explaining JWTs contains JWTs), and a postal address (which in an
+answer is usually the answer). Findings of `possible` confidence are left out
+too: for text you did not write, a maybe is not worth interrupting you for.
+
+**What is still true.** On a profile in a managed fleet, the first page load
+after the policy appears runs on the person's own settings until the managed
+read lands. Managed policy in practice tightens — a stricter mode, extra
+required detectors, an allowlist the person cannot edit — so that window is one
+where Chhanni may be less strict than the administrator intends, not one where
+it is off.
+
+---
+
+## 15f. The caps say when they fired
+
+Reading the page's text means `document.body.innerText`, which stops at a
+shadow boundary, plus a sweep of open shadow roots. The sweep is capped —
+20,000 elements, 200 roots — because an extension running inside somebody
+else's DOM has no business making an unbounded traversal. The history walk is
+capped too, at 120,000 characters of transcript that was already on screen.
+
+A cap is a limitation. A cap that fires silently is this product telling the
+same lie it exists to catch: *we stopped looking* rendered as *nothing found*.
+So each one records why it fired, and the popup says so on the tab it happened
+on — "this page is too large for Chhanni to read in full, so replies inside
+custom elements are not being watched", and for a long thread, roughly how many
+words further up were never checked. The number is derived from the cursor
+rather than from the budget, so on a page too busy to spare an idle frame it
+reports the history as unread, which is what it is.
+
+None of this touches what you send. The caps are on reading the page's own
+replies; the message in the composer is scanned in full.
+
+---
+
 ## 16. It is advisory, not enforcement
 
 "Send as-is" always works. That is deliberate — a tool that cannot be

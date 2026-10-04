@@ -103,6 +103,73 @@ async function renderCoverage(tab, on) {
   return { host, watching: builtIn || added };
 }
 
+/**
+ * What is true of *this tab*, as opposed to this configuration.
+ *
+ * Everything above is read from the manifest: it says which sites Chhanni is
+ * set up to watch. That is a fact about configuration and the popup has
+ * always been able to state it. It says nothing about whether the scanner
+ * actually managed to read the page in front of you, and on a large enough
+ * page the honest answer is "only part of it".
+ *
+ * The page-text sweep is capped — a cap is the only way an extension running
+ * inside somebody else's DOM can promise not to hang it — and a cap that
+ * fires silently turns "we stopped looking" into "nothing found". That
+ * substitution is the single failure this product exists to prevent, so it is
+ * not allowed to happen to the product itself.
+ *
+ * Asked of the page, not stored, because it is a property of a live tab. No
+ * answer means no content script is running there, which the lines above have
+ * already said in plainer words.
+ */
+const SWEEP_REASON = {
+  nodes: 'This page is too large for Chhanni to read in full, so replies inside '
+       + 'custom elements are not being watched. What you send is still checked completely.',
+  roots: 'This page has more custom elements than Chhanni reads, so some replies '
+       + 'are not being watched. What you send is still checked completely.',
+  dom: 'Chhanni could not read this page\u2019s text, so replies here are not being '
+     + 'watched. What you send is still checked completely.',
+};
+
+async function renderPageState(tab, watching) {
+  const line = $('pageState');
+  line.hidden = true;
+  line.textContent = '';
+  if (!tab?.id || !watching) return;
+
+  let state = null;
+  try {
+    state = await chrome.tabs.sendMessage(tab.id, { type: 'chhanni:page-state' });
+  } catch { return; }          // no content script in this tab
+  if (!state) return;
+
+  if (state.engine === 'failed') {
+    line.textContent = 'Chhanni\u2019s engine failed to load on this page. Nothing here is being checked.';
+    line.hidden = false;
+    return;
+  }
+  if (!state.watchingResponses) return;   // the feature is off; not a surprise
+
+  const reason = SWEEP_REASON[state.sweepLimit];
+  if (reason) { line.textContent = reason; line.hidden = false; return; }
+
+  // A conversation longer than the history budget. Saying nothing here would
+  // let "Chhanni is watching this page" stand for "Chhanni has read this
+  // page", and on a two-week-old thread those are different claims.
+  //
+  // The floor is there because a few hundred words of unread transcript is
+  // not worth a line in the popup, and the rounding is to the nearest hundred
+  // because the figure is an estimate — six characters to a word — and
+  // printing it to the character would dress a guess up as a count.
+  if (state.historyUnread > 3000) {
+    const words = Math.round(state.historyUnread / 6 / 100) * 100;
+    line.textContent = 'This conversation is longer than Chhanni reads back. Roughly '
+      + `${words.toLocaleString()} words further up have not been checked for anything a `
+      + 'reply might contain. What you send is still checked completely.';
+    line.hidden = false;
+  }
+}
+
 const scriptId = (origin) => `chhanni-${origin.replace(/[^a-z0-9]/gi, '-')}`;
 
 /** Ask for the origin, then register the same content script the manifest does. */
@@ -197,6 +264,7 @@ async function render() {
   const on = policy.mode !== 'off';
 
   const { host, watching } = await renderCoverage(tab, on);
+  await renderPageState(tab, watching);
   $('site').textContent = !host ? 'no page'
     : watching ? `watching ${host}`
     : `${host} — not watched`;

@@ -103,6 +103,7 @@
     if (bootNotice && bootNotice.isConnected) return;
     bootNotice = document.createElement('div');
     bootNotice.className = 'chhanni-notice chhanni-in';
+    bootNotice.dataset.chhanniKind = 'starting';
     bootNotice.setAttribute('role', 'status');
     bootNotice.textContent = 'Chhanni is still starting \u2014 that was held, not checked. Try again in a moment.';
     try { document.body.appendChild(bootNotice); } catch { /* no body yet */ }
@@ -143,7 +144,7 @@
 
   // Parallel, not sequential: eight round-trips to the extension's own
   // resources have no reason to queue behind each other.
-  let scan, groupFindings, exposureScore, BAND_TEXT, SCORE_NOTE, REGIME_NOTE,
+  let scan, groupFindings, RULES, exposureScore, BAND_TEXT, SCORE_NOTE, REGIME_NOTE,
       isComposer, isSendControl, SEND_SELECTOR, mergePolicy, redact, pseudonymise,
       extractDocument, rewriteMode, rewriteBytes, describeKind, store;
   try {
@@ -153,7 +154,7 @@
       import(url('engine/managed.js')), import(url('engine/redact.js')),
       import(url('engine/documents.js')), import(url('store.js')),
     ]);
-    ({ scan, groupFindings } = detectM);
+    ({ scan, groupFindings, RULES } = detectM);
     ({ exposureScore, BAND_TEXT, SCORE_NOTE } = riskM);
     ({ REGIME_NOTE } = regM);
     ({ isComposer, isSendControl, SEND_SELECTOR } = compM);
@@ -174,6 +175,7 @@
       const warn = () => {
         const box = document.createElement('div');
         box.className = 'chhanni-notice chhanni-in';
+        box.dataset.chhanniKind = 'engine-failed';
         box.setAttribute('role', 'alert');
         box.textContent = 'Chhanni is not running on this page: its engine did not load, so nothing is being checked. '
           + 'Reload the extension — and if you are running it unpacked, run `node scripts/build.js` first.';
@@ -214,10 +216,9 @@
    * hash. With it there is no shared table to build. Chhanni logs nothing
    * anyway; this is for the fork that adds logging.
    */
-  async function loadSalt() {
+  async function loadSalt(existing) {
     try {
-      const stored = await chrome.storage.local.get('fpSalt');
-      if (typeof stored.fpSalt === 'string' && stored.fpSalt.length >= 22) return stored.fpSalt;
+      if (typeof existing === 'string' && existing.length >= 22) return existing;
       const bytes = new Uint8Array(16);
       crypto.getRandomValues(bytes);
       const fpSalt = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -229,11 +230,15 @@
   /**
    * Policy arrives from two places neither of which this code controls: a
    * synced value that may predate the current schema, and an administrator's
-   * GPO or plist. A scalar where an array belongs used to be fatal — `new
-   * Set(5)` throws, `mergePolicy` threw at load and killed the whole content
-   * script, and `scan()` threw per-paste and let the paste through. Both were
-   * reachable by a typo, with no attacker involved. Coerce at the boundary and
-   * the rest of the engine can keep assuming arrays.
+   * GPO or plist. `storage.managed` is populated by the browser from
+   * enterprise policy — GPO, a macOS profile, Chrome Enterprise, Firefox
+   * policies.json. Both are local reads; no request leaves the machine.
+   *
+   * A scalar where an array belongs used to be fatal — `new Set(5)` throws,
+   * `mergePolicy` threw at load and killed the whole content script, and
+   * `scan()` threw per-paste and let the paste through. Both were reachable
+   * by a typo, with no attacker involved. Coerce at the boundary and the rest
+   * of the engine can keep assuming arrays.
    */
   const ARRAY_FIELDS = ['disabled', 'allow', 'block', 'warn', 'requiredDetectors', 'neverAllow', 'codenames'];
   function sanitisePolicy(raw) {
@@ -249,15 +254,64 @@
     return out;
   }
 
-  async function loadPolicy() {
-    let user = DEFAULTS;
+  /**
+   * Policy, in the order it can actually be had.
+   *
+   * This used to be two awaits before the engine would admit to being ready:
+   * `storage.sync` for the person's settings and `storage.managed` for an
+   * administrator's. The second one is the problem, and the measurement is
+   * stark. `storage.managed.get(null)` resolves through an IPC to the browser
+   * process whose reply is dispatched on the renderer's main thread, and on a
+   * busy page that thread is not available:
+   *
+   *   1500-turn thread, renderer idle            3.0 s
+   *   1500-turn thread, a reply streaming
+   *     and an indicator ticking, 4x throttle   57.8 s
+   *
+   * Fifty-eight seconds. Not of being wrong — the holding listeners are
+   * already attached by then, so nothing leaks — but of a tool that answers
+   * every paste with "still starting, that was held". A person who opens a
+   * long conversation and pastes something is told to wait a minute, and what
+   * they will actually do is switch Chhanni off. Correct and unusable is one
+   * of the ways a security product gets uninstalled.
+   *
+   * Nothing can be done about the renderer being busy. What can be done is to
+   * stop an administrator's policy, which nine profiles in ten do not have,
+   * from being on the critical path for the nine:
+   *
+   *   never seen managed policy   go ready on the person's own settings, and
+   *                               read managed in the background. If it turns
+   *                               out to exist, remember that for next time.
+   *   seen it before              wait for it, because this profile is in a
+   *                               managed fleet and the administrator's
+   *                               policy is the one that counts — with a cap,
+   *                               so a stalled policy service cannot hold the
+   *                               page open forever.
+   *
+   * The window this leaves is one page load, once per profile, on the first
+   * visit after an administrator deploys a policy — and `storage.onChanged`
+   * fires for the managed area too, so even that load picks the policy up as
+   * soon as it lands rather than at the next navigation.
+   */
+  const MANAGED_WAIT_MS = 4000;
+  let policyPending = false;
+
+  async function userPolicy() {
     try {
       const stored = await chrome.storage.sync.get('policy');
-      if (stored.policy) user = { ...DEFAULTS, ...sanitisePolicy(stored.policy) };
+      if (stored.policy) return { ...DEFAULTS, ...sanitisePolicy(stored.policy) };
     } catch { /* first run; defaults are fine */ }
-    let managed = null;
-    try { managed = (await chrome.storage.managed.get(null)) || null; } catch { /* unmanaged */ }
-    const admin = managed && Object.keys(managed).length ? sanitisePolicy(managed) : null;
+    return DEFAULTS;
+  }
+
+  async function readManaged() {
+    try {
+      const got = await chrome.storage.managed.get(null);
+      return got && Object.keys(got).length ? sanitisePolicy(got) : null;
+    } catch { return null; }      // unmanaged, or the area is unavailable
+  }
+
+  function applyPolicy(user, admin) {
     try {
       policy = mergePolicy(user, admin);
     } catch {
@@ -266,9 +320,70 @@
     }
     policy.fingerprintSalt = salt;
   }
-  salt = await loadSalt();
-  await loadPolicy();
-  chrome.storage.onChanged?.addListener(() => { loadPolicy().catch(() => {}); });
+
+  /** Re-read everything. Used by storage.onChanged, where waiting is free. */
+  async function loadPolicy() {
+    applyPolicy(await userPolicy(), await readManaged());
+  }
+
+  const boot = await (async () => {
+    try { return await chrome.storage.local.get(['fpSalt', 'managedSeen']); }
+    catch { return {}; }
+  })();
+  salt = await loadSalt(boot.fpSalt);
+  const user = await userPolicy();
+
+  /**
+   * When the managed read lands, re-read everything rather than merging over
+   * the settings captured at boot.
+   *
+   * The first version of this closed over `user` and applied `mergePolicy(user,
+   * admin)` whenever the managed read resolved — which on a slow page can be a
+   * minute later. If the person changed a setting in that minute, the merge
+   * would have quietly put the old value back. Policy is cheap to re-read once
+   * managed is warm, so re-read it.
+   */
+  const mergeWhenManagedLands = (pending) => pending
+    .then(async (admin) => {
+      policyPending = false;
+      if (!admin) return;
+      await loadPolicy();
+      // Remember, so every later load on this profile waits for it.
+      try { chrome.storage.local.set({ managedSeen: true }); } catch { /* quota */ }
+    })
+    .catch(() => { policyPending = false; });
+
+  if (boot.managedSeen) {
+    // This profile has had an administrator's policy before, so it is the one
+    // that counts and it is worth waiting for — but not indefinitely.
+    const pending = readManaged();
+    const admin = await Promise.race([
+      pending,
+      new Promise((r) => setTimeout(() => r(undefined), MANAGED_WAIT_MS)),
+    ]);
+    if (admin === undefined) {
+      // Still coming. Go on without it and merge it when it arrives, rather
+      // than discarding the read and leaving the popup saying "pending" for
+      // the life of the page.
+      policyPending = true;
+      applyPolicy(user, null);
+      mergeWhenManagedLands(pending);
+    } else {
+      applyPolicy(user, admin);
+    }
+  } else {
+    applyPolicy(user, null);
+    policyPending = true;
+    mergeWhenManagedLands(readManaged());
+  }
+
+  chrome.storage.onChanged?.addListener((changes, area) => {
+    // Our own writes land in `local` — the fingerprint salt and the
+    // managed-seen flag — and neither is policy. Re-reading on them would
+    // mean every first run issues a second managed read for nothing.
+    if (area === 'local' && !(changes && 'policy' in changes)) return;
+    loadPolicy().catch(() => {});
+  });
 
   // Everything the handlers need is in place. Stand the holding listeners down.
   engineState = 'ready';
@@ -782,10 +897,19 @@
   let noticeEl = null;
   let noticeTimer = null;
 
-  function showNotice(message) {
+  /**
+   * @param {string} message
+   * @param {string} kind  what this notice is about, as a stable handle for
+   *   tests and for the panel's own hit-testing. Three unrelated things wear
+   *   the `chhanni-notice` class — the boot hold, the engine-failure banner
+   *   and this — and a test that asserted on the class alone passed against
+   *   a build where the response scanner never ran at all.
+   */
+  function showNotice(message, kind = 'general') {
     clearTimeout(noticeTimer);
     noticeEl?.remove();
     noticeEl = el('div', 'chhanni-notice');
+    noticeEl.dataset.chhanniKind = kind;
     noticeEl.setAttribute('role', 'status');
     noticeEl.append(el('span', 'chhanni-notice-dot'), el('span', null, message));
     const close = el('button', 'chhanni-notice-x', '\u00d7');
@@ -829,7 +953,6 @@
   }
 
   const seenResponses = new Set();
-  let responseTimer = null;
 
   /**
    * The page's rendered text, including open shadow roots.
@@ -839,73 +962,372 @@
    * from innerText. A chat UI built on web components would therefore have had
    * its entire transcript invisible to the response scanner.
    *
-   * The sweep is capped and runs at most once per debounce interval, so the
-   * cost is one querySelectorAll on a settled DOM rather than per mutation.
+   * The sweep is capped, and the caps are the point of `sweepLimit`. A limit
+   * that is hit silently turns "we stopped looking" into "nothing found",
+   * which is the one failure mode this whole product exists to prevent. So
+   * each cap records why it fired, and the popup says so.
    */
   const MAX_SWEEP_NODES = 20000;
   const MAX_SHADOW_ROOTS = 200;
 
+  /** null when the last read was complete; otherwise why it was not. */
+  let sweepLimit = null;
+
   function visibleText() {
+    sweepLimit = null;
     let text = '';
-    try { text = document.body?.innerText || ''; } catch { return ''; }
+    try { text = document.body?.innerText || ''; } catch { sweepLimit = 'dom'; return ''; }
     let nodes;
-    try { nodes = document.body?.querySelectorAll('*'); } catch { return text; }
-    if (!nodes || nodes.length > MAX_SWEEP_NODES) return text;
+    try { nodes = document.body?.querySelectorAll('*'); } catch { sweepLimit = 'dom'; return text; }
+    if (!nodes) { sweepLimit = 'dom'; return text; }
+    if (nodes.length > MAX_SWEEP_NODES) { sweepLimit = 'nodes'; return text; }
     let roots = 0;
     for (const node of nodes) {
       const root = node.shadowRoot;   // null for closed roots, and for most nodes
       if (!root) continue;
-      if (++roots > MAX_SHADOW_ROOTS) break;
+      if (++roots > MAX_SHADOW_ROOTS) { sweepLimit = 'roots'; break; }
       try { text += '\n' + (root.textContent || ''); } catch { /* detached */ }
     }
     return text;
   }
 
   /**
-   * How much of the page has already been through the scanner.
+   * When a pass runs.
    *
-   * The old version read a fixed 12,000-character tail on every pass, which
-   * is only the newest reply when replies are short. A long answer, a long
-   * tool output or a pasted code block pushes the previous one out of the
-   * window before anything looks at it, and nothing ever comes back for it —
-   * a reply could be skipped entirely by a reply that arrived after it.
+   * A trailing debounce is right: a streamed reply mutates the DOM dozens of
+   * times a second and scanning per token would be absurd. What was missing
+   * was a ceiling. The timer was cleared and reset on *every* mutation, so a
+   * page that mutates more often than the interval reset it forever and the
+   * scanner never ran at all — not late, never.
    *
-   * Scanning forward from where the last pass stopped means growth is always
-   * covered, whatever the shape of the transcript. The overlap carries a
-   * finding that straddles the boundary; the cap bounds one pass, and
-   * whatever it does not reach this time is still ahead of the mark and gets
-   * read on the next one.
+   * That is not hypothetical. Every product on the match list keeps something
+   * moving in the DOM: a typing indicator, a caret, a shimmer, a token
+   * counter. Measured in Chromium against a 600-turn fixture with an
+   * indicator ticking every 400 ms, a reply carrying a credential streamed in
+   * full and no notice appeared for the fifteen seconds the test waited. The
+   * feature shipped, was documented, and was dead on the pages it was for.
+   *
+   * So: the same debounce, with a hard ceiling. A pass runs within MAX_WAIT_MS
+   * of the first mutation that is still unscanned, whatever else arrives.
    */
-  let scannedTo = 0;
-  const RESCAN_OVERLAP = 2000;
-  const MAX_PASS_BYTES = 24000;
+  const DEBOUNCE_MS = 1200;
+
+  /**
+   * How often a pass may run, decided by what a pass costs here.
+   *
+   * A fixed ceiling is a bet on the machine, and this file has already paid
+   * for one of those. Reading the page's text is the expensive part and it
+   * scales with the conversation: 12 ms on a 1500-turn thread on a desktop,
+   * 64 ms with the renderer throttled 4x. A three-second ceiling is 0.4% of
+   * the main thread in the first case and 2% in the second, and on a machine
+   * slower still it would keep climbing.
+   *
+   * So the ceiling is derived from the measurement instead of asserted: a
+   * pass times itself, and the interval is set so the scanner never takes
+   * more than SHARE of one core. On a short thread that floors at three
+   * seconds; on a 1.7 MB thread on a slow machine it stretches, and the
+   * notice about a credential in a reply arrives later. That is the honest
+   * trade — later, and stated in the popup, rather than a page that stutters
+   * while somebody is reading it.
+   */
+  const MIN_WAIT_MS = 3000;
+  const MAX_WAIT_CAP_MS = 20000;
+  const SHARE = 0.02;
+  let passCost = 0;
+  let maxWait = MIN_WAIT_MS;
+  let responseTimer = null;
+  let ceilingTimer = null;
+
+  function notePassCost(ms) {
+    // Weighted toward history rather than the latest sample: one slow pass
+    // during a layout storm should not retune the whole session.
+    passCost = passCost ? passCost * 0.7 + ms * 0.3 : ms;
+    maxWait = Math.min(MAX_WAIT_CAP_MS, Math.max(MIN_WAIT_MS, Math.round(passCost / SHARE)));
+  }
+
+  function schedulePass(delay = DEBOUNCE_MS) {
+    clearTimeout(responseTimer);
+    responseTimer = setTimeout(runPass, delay);
+    if (ceilingTimer === null) ceilingTimer = setTimeout(runPass, maxWait);
+  }
+
+  function runPass() {
+    clearTimeout(responseTimer);
+    clearTimeout(ceilingTimer);
+    responseTimer = null;
+    ceilingTimer = null;
+    const t0 = performance.now();
+    try { inspectResponses(); } catch { /* never let a pass break the page */ }
+    notePassCost(performance.now() - t0);
+  }
+
+  /**
+   * What gets scanned, in what order, and how much is promised.
+   *
+   * Three measurements shaped this, and the second one was the author's own
+   * fix making things worse.
+   *
+   * The mark used to start at zero and walk forward one window per pass. That
+   * is the right instinct for completeness and exactly backwards for urgency:
+   * on a 1.7-million-character thread the reply that *just arrived* was the
+   * seventy-first thing the scanner looked at. Measured notice latency on a
+   * streamed reply carrying a credential — 3.0 s at 50 turns, 4.9 s at 600,
+   * 10.6 s at 1500 — a number that grew with the length of a transcript that
+   * was already on screen before the page loaded.
+   *
+   * Inverting it fixed the latency, and the first attempt paid for that by
+   * backfilling the whole transcript from an idle callback. On this machine
+   * that was free. With the renderer throttled 4x — a shared CI runner, a
+   * Chromebook, a laptop with a build running — it was 5,705 ms of main-thread
+   * blocking on a 1500-turn page, because 71 chunks of 24 KB is seconds of
+   * scanning however politely it is scheduled, and an idle callback that
+   * overruns a frame is a long task like any other.
+   *
+   * So the budget is explicit and small:
+   *
+   *   a pass reads forward from where the text last ended, which is the new
+   *   text and nothing else, in slices small enough to stay a short task;
+   *
+   *   the transcript that was already there is read newest-first, because
+   *   that is where anything worth saying is, up to MAX_HISTORY_BYTES; and
+   *
+   *   whatever is above that line is not read, and the popup says so. A cap
+   *   that is stated is a limitation. A cap that is silent is this product
+   *   telling the same lie it exists to catch.
+   */
+  const RESCAN_OVERLAP = 1000;
+  const PASS_BYTES = 6000;        // one scan unit; small enough not to jank
+  const SLICE_BUDGET_MS = 20;     // how long one pass may hold the thread
+  const MAX_HISTORY_BYTES = 120000;
+
+  let growthFrom = -1;      // -1 until the first pass sets the waterline
+  let waterline = 0;        // text length at the first pass: below it is old
+  let historyFrom = 0;      // the history cursor, descending from waterline
+  let historyFloor = 0;     // and where it stops
+  let historyHandle = null;
+
+  /**
+   * How much of this conversation has not been read.
+   *
+   * Derived, not stored. An earlier version recorded the budget's floor once
+   * and reported that, which was wrong in the direction that matters: on a
+   * page that never goes idle the walk does not progress, and a fixed number
+   * would have claimed the recent history was read when the cursor had not
+   * moved at all. Everything below the cursor is unread, whether because the
+   * budget stops there or because the page has been too busy to get to it.
+   */
+  const unreadHistory = () => (growthFrom < 0 ? 0 : Math.max(0, historyFrom));
+
+  /**
+   * The page's text, read as rarely as it can be.
+   *
+   * `document.body.innerText` forces a synchronous layout of the whole
+   * document: 19 ms on a 1500-turn thread on this machine, 115 ms with the
+   * renderer throttled 4x. That is the single most expensive thing this file
+   * does, and the first two attempts at the scanner both paid it far more
+   * often than they needed to — once per chained pass, and once per history
+   * slice, which together were most of the blocking the budgets caught.
+   *
+   * So there are two caches with two different lifetimes, because there are
+   * two different claims being made:
+   *
+   *   the live page   may have changed since the last read, so the cache is
+   *                   good for CACHE_MS — long enough to cover a chain of
+   *                   passes 60 ms apart, short enough that a mutation-driven
+   *                   pass a second later gets fresh text.
+   *   the history     is the transcript below the waterline, which by
+   *                   definition was there before the page finished loading
+   *                   and does not change. One snapshot serves the whole
+   *                   walk, and is dropped when it ends.
+   */
+  let cached = '';
+  let cachedAt = 0;
+  const CACHE_MS = 400;
+
+  function pageText(force) {
+    const t = Date.now();
+    if (!force && cached && t - cachedAt < CACHE_MS) return cached;
+    cached = visibleText();
+    cachedAt = t;
+    return cached;
+  }
 
   function inspectResponses() {
     if (policy.watchResponses === false || policy.mode === 'off') return;
-    const body = visibleText();
+    // Not forced. A pass chained 60 ms behind the last one is reading text
+    // that has grown by perhaps twenty characters, and `growthFrom` never
+    // advances past what was actually read, so anything the stale read missed
+    // is still ahead of the mark for the next pass.
+    const body = pageText(false);
     if (body.length < 40) return;
 
     // A shorter page means a new conversation, or virtual scrolling recycling
-    // what was there. Either way the mark no longer refers to this text.
-    if (body.length < scannedTo) { scannedTo = 0; seenResponses.clear(); }
-
-    const from = Math.max(0, scannedTo - RESCAN_OVERLAP);
-    const to = Math.min(body.length, from + MAX_PASS_BYTES);
-    if (to <= from) return;
-    const window = body.slice(from, to);
-    // Only advance to what was actually read, so a transcript that grew faster
-    // than one pass is finished by the next rather than skipped.
-    scannedTo = to;
-    if (to < body.length) {
-      clearTimeout(responseTimer);
-      responseTimer = setTimeout(inspectResponses, 60);
+    // what was there. Either way the marks no longer refer to this text.
+    //
+    // What does *not* follow is that the dedupe set should be emptied. It is
+    // keyed on a finding's value and the text around it, so keeping it is what
+    // stops a page that wobbles in length — a "stop generating" button coming
+    // and going is enough — from announcing the same key over and over. Only a
+    // page that has lost most of its text is a different conversation, and
+    // only then is announcing the same key again the right thing to do.
+    if (body.length < growthFrom) {
+      if (body.length < growthFrom / 2) seenResponses.clear();
+      resetMarks();
     }
 
-    let result;
-    try { result = scan(window, { ...policy, ner: false, tables: false }); } catch { return; }
+    if (growthFrom < 0) {
+      growthFrom = Math.max(0, body.length - PASS_BYTES);
+      waterline = growthFrom;
+      historyFrom = waterline;
+      historyFloor = Math.max(0, waterline - MAX_HISTORY_BYTES);
+      queueHistory();
+    }
 
-    const worth = result.findings.filter((f) =>
-      f.ruleId === 'prompt_injection' || (!f.advisory && f.severity === 'critical'));
+    // Forward through whatever arrived, in slices, for as long as one pass is
+    // allowed to hold the thread. Only the mark advances, so a reply that grew
+    // faster than the budget is finished by the next slice rather than skipped.
+    const until = Date.now() + SLICE_BUDGET_MS;
+    while (growthFrom < body.length) {
+      const from = Math.max(0, growthFrom - RESCAN_OVERLAP);
+      const to = Math.min(body.length, from + PASS_BYTES);
+      if (to <= growthFrom) break;
+      growthFrom = to;
+      examine(body.slice(from, to));
+      if (Date.now() >= until) break;
+    }
+    if (growthFrom < body.length) schedulePass(60);
+  }
+
+  /**
+   * The transcript that was already on screen.
+   *
+   * Newest first, because a credential in the reply above the one that just
+   * arrived is worth saying and one from two weeks ago is not news. Idle
+   * work, one slice at a time, because it was there before the page finished
+   * loading and so has no claim on a frame the person is using.
+   *
+   * It still gets read, within the budget, because a credential in a reply
+   * from yesterday is in the history being sent back to the model today.
+   */
+  let historyText = null;      // one snapshot for the whole walk
+
+  /**
+   * A budget in milliseconds, not only in characters.
+   *
+   * 120,000 characters is a fixed amount of work and therefore a variable
+   * amount of time: free on a desktop, and on a 1500-turn thread at 4x
+   * throttle it put 92 ms of blocking into five seconds of a page doing
+   * nothing. A byte budget decides how much is read; a CPU budget decides
+   * what that is allowed to cost, and only the second one holds on a machine
+   * nobody has measured. Whatever is not reached stays unread, and
+   * `unreadHistory()` reports it rather than the budget's floor.
+   */
+  const HISTORY_CPU_MS = 400;
+  let historySpent = 0;
+
+  /**
+   * Forget where we were.
+   *
+   * All five pieces of state, because four of them were a bug: an earlier
+   * version reset the scan mark and left the history walk's cursor, its
+   * snapshot, its spent budget and its outstanding idle callback alone. A
+   * profile that had already spent its 400 ms on one conversation would then
+   * never read the history of the next one, and the pending callback made
+   * `queueHistory()` return immediately for the rest of the page's life.
+   */
+  function resetMarks() {
+    growthFrom = -1;
+    historyFrom = 0;
+    historyFloor = 0;
+    historyText = null;
+    historySpent = 0;
+    if (historyHandle !== null) {
+      try {
+        if (typeof cancelIdleCallback === 'function') cancelIdleCallback(historyHandle);
+        else clearTimeout(historyHandle);
+      } catch { /* already run */ }
+      historyHandle = null;
+    }
+  }
+
+  function queueHistory() {
+    if (historyHandle !== null || historyFrom <= historyFloor) return;
+    if (historySpent >= HISTORY_CPU_MS) return;
+    const run = () => {
+      historyHandle = null;
+      if (policy.watchResponses === false || policy.mode === 'off') { historyText = null; return; }
+      const t0 = performance.now();
+      if (historyText === null) historyText = pageText(false);
+      const body = historyText;
+      if (body.length < waterline) { historyText = null; return; }   // the page changed under us
+      const to = historyFrom;
+      const from = Math.max(historyFloor, to - PASS_BYTES);
+      if (to <= from) { historyText = null; return; }
+      historyFrom = from;
+      try {
+        examine(body.slice(from, Math.min(body.length, to + RESCAN_OVERLAP)));
+      } catch { /* keep going */ }
+      historySpent += performance.now() - t0;
+      if (historyFrom <= historyFloor || historySpent >= HISTORY_CPU_MS) { historyText = null; return; }
+      queueHistory();
+    };
+    // No `timeout`. An idle callback with one is not idle work: it fires
+    // whether or not there is a spare frame, which is how the first version
+    // of this walk put 290 ms of blocking into five seconds of a page doing
+    // nothing. Without one, a page too busy to spare a frame simply has not
+    // read its history yet, and `unreadHistory()` reports exactly that.
+    historyHandle = typeof requestIdleCallback === 'function'
+      ? requestIdleCallback(run)
+      : setTimeout(run, 300);
+  }
+
+  /**
+   * What a reply is worth mentioning for.
+   *
+   * This was `critical` only, and the rule table says why that was too narrow.
+   * A Slack incoming webhook is `high`. So is a SendGrid key, a Twilio key, a
+   * Notion token, a Grafana token, an IBAN — twenty-one shapes that are
+   * unmistakably live credentials, every one of which the model could echo
+   * back into a conversation, and about every one of which Chhanni said
+   * nothing at all. "Critical" is a severity ranking for the person's own
+   * outgoing message; it was never a definition of what matters in a reply.
+   *
+   * Three exclusions, each for a reason rather than for tidiness:
+   *
+   *   advisory      the ten context detectors — a negotiating position, a
+   *                 legal hold, a customer list — are judgements about
+   *                 sensitivity, not matches. An assistant discussing a
+   *                 negotiation would trip one every time.
+   *   generic       `jwt` and `bearer_header` match a shape, not a vendor. A
+   *                 reply explaining how JWTs work contains JWTs.
+   *   prose         a postal address in an answer is usually the answer.
+   *
+   *   confidence `possible` is excluded too: for text the person did not
+   *   write, a maybe is not worth interrupting them for.
+   *
+   * The same set tells the engine what not to compute. The findings this
+   * filter discards were being produced on every pass and thrown away.
+   */
+  const REPLY_RULES = new Set((RULES || []).filter((r) => {
+    if (r.synthetic || r.advisory) return false;
+    if (r.severity === 'critical') return true;        // includes prompt_injection
+    if (r.severity !== 'high') return false;
+    if (r.category === 'generic' || r.category === 'prose') return false;
+    return r.confidence !== 'possible';
+  }).map((r) => r.id));
+  const REPLY_DISABLED = (RULES || []).filter((r) => !REPLY_RULES.has(r.id)).map((r) => r.id);
+
+  /** Scan one window of page text and say something if it matters. */
+  function examine(chunk) {
+    let result;
+    const off = Array.isArray(policy.disabled) ? policy.disabled : [];
+    try {
+      result = scan(chunk, {
+        ...policy, ner: false, tables: false, disabled: [...off, ...REPLY_DISABLED],
+      });
+    } catch { return; }
+
+    const worth = result.findings.filter((f) => !f.advisory && REPLY_RULES.has(f.ruleId));
     if (!worth.length) return;
 
     /**
@@ -918,7 +1340,7 @@
      * *and* the text it sits in, so a re-render of the same reply is quiet and
      * a second reply carrying the same key is not.
      */
-    const context = (f) => window
+    const context = (f) => chunk
       .slice(Math.max(0, f.start - 30), f.start + (f.end - f.start) + 30)
       .replace(/\s+/g, ' ').trim();
     const key = worth.map((f) => `${f.fingerprint}@${context(f)}`).sort().join('|');
@@ -930,22 +1352,52 @@
 
     const injection = worth.find((f) => f.ruleId === 'prompt_injection');
     if (injection) {
-      showNotice('The reply on this page contains instructions aimed at an assistant. If you forward it, they travel with it.');
+      showNotice('The reply on this page contains instructions aimed at an assistant. If you forward it, they travel with it.', 'reply');
     } else {
       const labels = [...new Set(worth.map((f) => f.label))].join(', ');
-      showNotice(`The reply contains ${labels}. It is now in this conversation\u2019s history.`);
+      showNotice(`The reply contains ${labels}. It is now in this conversation’s history.`, 'reply');
     }
   }
 
-  const observer = new MutationObserver(() => {
-    clearTimeout(responseTimer);
-    // Debounced well past a streaming response's cadence, so this runs once
-    // when the reply settles rather than on every token.
-    responseTimer = setTimeout(inspectResponses, 1200);
-  });
+  const observer = new MutationObserver(() => schedulePass());
   try {
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    // A page that is already long when we arrive has a transcript nobody has
+    // read. Without this, a thread opened fresh and left alone is never
+    // scanned at all, because nothing mutates.
+    schedulePass(DEBOUNCE_MS);
   } catch { /* no body yet; the page is not a chat */ }
+
+  /**
+   * What the popup is allowed to say about this tab.
+   *
+   * The popup can report which sites are watched from the manifest, which is
+   * a fact about configuration. It cannot see whether the scanner actually
+   * managed to read this page, which is a fact about this tab — and that is
+   * the one a person needs, because the honest answer is sometimes "only
+   * partly". Answered by the top frame only; a subframe replying too would
+   * make the result a race.
+   */
+  if (window === window.top) {
+    try {
+      chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+        if (!msg || msg.type !== 'chhanni:page-state') return undefined;
+        reply({
+          engine: engineState,
+          watchingResponses: policy?.watchResponses !== false && policy?.mode !== 'off',
+          sweepLimit,
+          // Characters of transcript above the history budget. Not a
+          // performance statistic: it is the part of this conversation
+          // Chhanni has not read and is not going to.
+          historyUnread: unreadHistory(),
+          // True while an administrator's policy has not been read yet, so
+          // what is running is the person's own settings.
+          policyPending,
+        });
+        return true;
+      });
+    } catch { /* no runtime messaging in this context */ }
+  }
 
   // ----------------------------------------------------------- intercept
   document.addEventListener('paste', (e) => {
@@ -1219,7 +1671,8 @@
       if (coverage.length && policy.mode !== 'off') {
         showNotice(coverage.length === 1
           ? coverage[0]
-          : `Chhanni could not read ${coverage.length} of these files. Check them yourself before sending.`);
+          : `Chhanni could not read ${coverage.length} of these files. Check them yourself before sending.`,
+        'coverage');
       }
       onAllow(files);
       return;

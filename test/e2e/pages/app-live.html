@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a chat page that behaves like one</title>
+<!--
+  The response scanner is driven by a MutationObserver, which means every
+  assertion about it made against a static page is an assertion about an
+  extension that is asleep. Two things about real chat pages matter here and
+  neither is present in the other fixtures:
+
+    a reply streams in     the DOM is mutated dozens of times a second, then
+                           stops; a scanner with a trailing debounce and no
+                           ceiling never reaches the end of that
+    something always moves a typing indicator, a caret, a shimmer, a token
+                           counter — all of them mutate the DOM on a timer
+                           shorter than any sensible debounce
+
+  The second one is why this page exists. With an indicator ticking every
+  400 ms the old scanner's timer was reset forever and it never ran once: a
+  credential could be streamed into the page in full and nothing was said.
+-->
+<style>
+  body { font: 14px system-ui; margin: 0; padding: 0 0 120px; }
+  .turn { padding: 10px 20px; max-width: 720px; }
+  .tick { height: 16px; text-align: center; color: #888; }
+  .app { position: fixed; bottom: 0; left: 0; right: 0; padding: 16px; background: #fff; border-top: 1px solid #ddd; }
+  #prompt-textarea { width: 70%; min-height: 48px; }
+</style>
+
+<div id="transcript">
+  <div class="turn">Earlier in this conversation we agreed the cutover window would be on Sunday.</div>
+</div>
+
+<div class="app">
+  <form class="composer">
+    <textarea id="prompt-textarea" placeholder="Send a message to the model"></textarea>
+    <button type="button" id="send" aria-label="Send message">Send</button>
+  </form>
+</div>
+
+<script>
+  window.__sent = [];
+  document.getElementById('send').addEventListener('click', () => {
+    window.__sent.push(document.getElementById('prompt-textarea').value);
+  });
+
+  /** A streamed reply: characters in small chunks on a timer. */
+  window.__stream = (text, opts) => {
+    const { chunk = 8, every = 20 } = opts || {};
+    const turn = document.createElement('div');
+    turn.className = 'turn assistant';
+    document.getElementById('transcript').appendChild(turn);
+    let i = 0;
+    return new Promise((done) => {
+      const t = setInterval(() => {
+        if (i >= text.length) { clearInterval(t); done(); return; }
+        turn.appendChild(document.createTextNode(text.slice(i, i + chunk)));
+        i += chunk;
+      }, every);
+    });
+  };
+
+  /** An animated indicator: one node in, one node out, forever. */
+  let tick = null;
+  window.__ticker = (ms) => {
+    const host = document.createElement('div');
+    host.className = 'tick';
+    document.body.insertBefore(host, document.querySelector('.app'));
+    let on = false;
+    tick = setInterval(() => { on = !on; host.textContent = on ? '•' : ''; }, ms);
+  };
+  window.__stopTicker = () => { clearInterval(tick); tick = null; };
+</script>

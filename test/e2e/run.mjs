@@ -186,6 +186,11 @@ const server = createServer((q, s) => {
   let body;
   try { body = readFileSync(join(PAGES, q.url === '/' ? 'app-textarea.html' : q.url.split('?')[0])); }
   catch { s.writeHead(404); s.end(); return; }
+  // A fixture that needs a credential in its *initial* HTML cannot hold one:
+  // GitHub's push protection reads the file, not the intent, and a literal
+  // that matches a live-key pattern blocks the push however fake the value
+  // is. So the file carries a placeholder and the server fills it in.
+  if (body.includes('__CREDENTIAL__')) body = Buffer.from(String(body).replaceAll('__CREDENTIAL__', KEY));
   s.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
   s.end(body);
 });
@@ -204,6 +209,9 @@ const KEY = ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join('');
 // GitHub's push protection reads the file, not the intent, and a literal that
 // matches a live-key pattern blocks the push however fake the value is.
 const STRIPE = ['sk', 'live', '51H8xQ2eZvKYlo2C0abcdefghij'].join('_');
+// Slack's own documented placeholder shape, assembled for the same reason.
+const WEBHOOK = ['https://hooks.slack.com/services', 'T00000000', 'B00000000',
+                 'XXXXXXXXXXXXXXXXXXXXXXXX'].join('/');
 const SECRET = `AWS_ACCESS_KEY_ID=${KEY}`;
 const READY_MS = 3500;          // only used where readiness cannot be observed
 const THROTTLE = (() => {
@@ -339,6 +347,19 @@ async function waitReady(p, selector) {
   throw new Error('the extension never became demonstrably live on this page');
 }
 
+/**
+ * Did the *response scanner* say something?
+ *
+ * Not `.chhanni-notice`: three unrelated things wear that class — the boot
+ * hold, the engine-failure banner and this — and the first version of these
+ * three tests asserted on it and passed against a build where the response
+ * scanner never ran once. The boot hold in particular appears during
+ * `waitReady`, which every test calls. `data-chhanni-kind` is the handle.
+ */
+const reported = (p, timeout = 15000) => p.waitForFunction(
+  () => !!document.querySelector('.chhanni-notice[data-chhanni-kind="reply"]'),
+  null, { timeout }).then(() => true).catch(() => false);
+
 async function test(name, page, body, readySelector = '#prompt-textarea') {
   const profile = join(work, `p-${Math.random().toString(36).slice(2)}`);
   const ctx = await chromium.launchPersistentContext(profile, {
@@ -362,7 +383,11 @@ async function test(name, page, body, readySelector = '#prompt-textarea') {
       await cdp.send('Emulation.setCPUThrottlingRate', { rate: THROTTLE }).catch(() => {});
     }
     await p.goto(`http://localhost:${PORT}/${page}`);
-    await waitReady(p, readySelector);
+    // `readySelector: null` means do not touch this page. The readiness probe
+    // pastes into the composer, and the extension answers by appending a pill
+    // to document.body — which is a mutation the response scanner observes.
+    // A test about what happens on a page nobody has touched cannot use it.
+    if (readySelector) await waitReady(p, readySelector);
     await body(p, t, ctx);
     passed++;
     console.log(`${green('ok')}   ${name}`);
@@ -794,6 +819,64 @@ await test('a malformed stored policy does not let content through', 'app-textar
   const v = await p.locator('#prompt-textarea').inputValue();
   t.ok(!v.includes(KEY), 'a malformed policy let the key through');
 });
+
+/**
+ * The response scanner, against a page that behaves like a chat page.
+ *
+ * These three are regression tests for a defect that shipped, was documented,
+ * and did nothing on any of the twenty-three sites it was written for. The
+ * scanner debounced on a MutationObserver with no ceiling, so any page that
+ * mutated more often than the interval reset the timer forever. Every chat
+ * product keeps something moving in the DOM — an indicator, a caret, a
+ * shimmer — and so on every one of them the scanner never ran at all.
+ *
+ * Nothing in the unit suite could have caught it: there is no DOM there. The
+ * other e2e fixtures could not either, because they are static, and against a
+ * static page the scanner is correct and idle for the same reason.
+ */
+await test('a credential streamed into a reply is reported', 'app-live.html', async (p, t) => {
+  await p.evaluate((reply) => window.__stream(reply, { chunk: 8, every: 20 }),
+    `Set AWS_ACCESS_KEY_ID=${KEY} in the environment and restart the worker. `
+    + 'The replica lag should settle within a minute of the cutover. '.repeat(4));
+  t.ok(await reported(p), 'a credential arrived in a reply and Chhanni never said so');
+});
+
+await test('an animated indicator does not starve the response scanner', 'app-live.html', async (p, t) => {
+  await p.evaluate(() => window.__ticker(400));
+  await p.evaluate((reply) => window.__stream(reply, { chunk: 8, every: 20 }),
+    `Set AWS_ACCESS_KEY_ID=${KEY} in the environment and restart the worker. `
+    + 'The replica lag should settle within a minute of the cutover. '.repeat(4));
+  const said = await reported(p);
+  await p.evaluate(() => window.__stopTicker());
+  t.ok(said, 'with an indicator ticking every 400 ms the scanner never ran — '
+    + 'which is the state it shipped in on every site it matches');
+});
+
+await test('a high-severity credential in a reply is reported, not only a critical one', 'app-live.html', async (p, t) => {
+  // The scanner reported `critical` findings only, and a Slack incoming
+  // webhook is `high` — as are a SendGrid key, a Twilio key, a Notion token
+  // and eighteen other shapes that are unmistakably live credentials. Every
+  // one of them could be echoed back by the model into a conversation that
+  // then travels with it, and about every one of them Chhanni said nothing.
+  await p.evaluate((reply) => window.__stream(reply, { chunk: 10, every: 15 }),
+    `You can post to the channel with ${WEBHOOK} from the worker. `
+    + 'Keep the retry budget low so a failed post does not queue. '.repeat(4));
+  t.ok(await reported(p), 'a Slack webhook arrived in a reply and Chhanni never said so');
+});
+
+await test('a reply on a page nobody has touched is read', 'app-settled.html', async (p, t) => {
+  // Deliberately without the readiness probe, and with no interaction at all.
+  // The credential is in the HTML the server sent and nothing on this page
+  // ever mutates, so a scanner driven only by mutation never reads it. That
+  // is the state somebody is in every time they reopen yesterday's
+  // conversation and leave it sitting on screen.
+  //
+  // The window is wide because there is nothing to observe readiness from:
+  // the engine loads in about 2 s, 3.5 s at --throttle 4, and the debounce is
+  // 1.2 s on top. Twenty seconds is not a guess at the answer, it is a cap on
+  // how long a failure takes to report.
+  t.ok(await reported(p, 20000), 'a credential sitting in a settled transcript was never read');
+}, null);
 
 await new Promise((r) => server.close(r));
 console.log();

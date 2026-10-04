@@ -179,6 +179,33 @@ for (const [, word] of read('README.md').matchAll(/\| \[DECISIONS\][^|]*\| ([\w-
 }
 checks.push(`decision records: ${records}`);
 
+// ── the browser suite's own count ────────────────────────────────────────
+//
+// There is exactly one place in the documentation that says how many
+// end-to-end cases run, and it went from fifteen to twenty-six without the
+// sentence changing. A count stated once is a count nobody re-reads.
+const WORDS_TO_N = (word) => {
+  const TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50 };
+  const [tens, unit] = String(word).toLowerCase().split('-');
+  return TENS[tens] !== undefined
+    ? TENS[tens] + (unit ? words.indexOf(unit) : 0)
+    : words.indexOf(String(word).toLowerCase());
+};
+const e2e = (read('test/e2e/run.mjs').match(/^await test\(/gm) || []).length;
+if (!e2e) {
+  problems.push('found no end-to-end cases at all — the check itself has rotted');
+} else {
+  let stated = 0;
+  for (const [, word] of read('docs/TESTING.md').matchAll(/^([\w-]+) cases run\./gm)) {
+    stated++;
+    if (WORDS_TO_N(word) !== e2e) {
+      problems.push(`docs/TESTING.md: says ${word} end-to-end cases run, test/e2e/run.mjs has ${e2e}`);
+    }
+  }
+  if (!stated) problems.push('docs/TESTING.md: no end-to-end case count found at all');
+  else checks.push(`end-to-end cases: ${e2e}`);
+}
+
 // ── every doc link resolves ──────────────────────────────────────────────
 for (const where of ['README.md', 'docs/LIMITATIONS.md', 'docs/BENCHMARK.md', 'docs/ARCHITECTURE.md',
   'docs/THREAT-MODEL.md', 'docs/ROADMAP.md', 'docs/DECISIONS.md', 'CHANGELOG.md', 'PRIVACY.md']) {

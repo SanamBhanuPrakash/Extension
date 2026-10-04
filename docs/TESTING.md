@@ -36,7 +36,7 @@ npm install --no-save playwright
 npx playwright install chromium
 ```
 
-Fifteen cases run. They assert on what a mock provider *received*, never on
+Twenty-seven cases run. They assert on what a mock provider *received*, never on
 whether a panel appeared — "the panel was shown" and "the key did not leave"
 are different claims and only the second one is the product.
 
@@ -57,6 +57,53 @@ has been restricted in some Chromium forks; Chhanni falls back to defaults when
 that read fails, so the symptom would be settings silently not applying rather
 than a crash. If the suite passes in Brave and your settings persist across a
 reload, that path is fine.
+
+---
+
+## 1b. What it costs, on a conversation the size yours are
+
+```console
+node scripts/build.js
+node test/perf/run.mjs
+```
+
+This one measures rather than asserts, and then holds the measurements to
+budgets that fail the run. It opens conversations of 50, 600 and 1500 turns —
+the last is 1.7 MB of transcript and 17,505 elements, which is a fortnight of
+one project in one thread — and for each one reports what Chhanni adds to the
+page's own cost while a reply streams, while you paste, while you send, and
+while you do nothing at all.
+
+Every figure that can be is stated **over the same page with no extension
+loaded**, which is why each size is opened twice. That is not thoroughness for
+its own sake: at 1500 turns the fixture blocks the main thread for seconds with
+nothing installed, because Chromium is relaying out 17,505 elements on every
+frame of an append. An absolute number there is a measurement of the browser.
+
+```console
+node test/perf/run.mjs --turns 1500          one size only
+node test/perf/run.mjs --repeat 5            more runs, reported as medians
+node test/perf/run.mjs --no-baseline         latency only, half the runtime
+node test/perf/run.mjs --throttle 4          roughly a laptop under load
+```
+
+`--throttle 4` is where three real defects turned up, and it is deliberately
+**not** a gate in CI: at 4x the no-extension control itself swings 3,982 /
+4,357 / 4,810 ms across three identical runs, and a budget against a control
+that moves 800 ms fails at random. Use it to investigate, not to sign off.
+
+The last line of the run is not a number:
+
+```
+a reply carrying a credential, while an indicator ticks every 400 ms: noticed after 3057ms
+```
+
+That one is a correctness test wearing a performance suite's clothes. Every
+chat product keeps something moving in the DOM — a typing indicator, a caret, a
+shimmer — and the response scanner's debounce used to be reset by every one of
+those mutations, forever, so it never ran at all on any site it matched. If that
+line ever says `never noticed` again, a documented feature is dead and no unit
+test will tell you.
 
 ---
 

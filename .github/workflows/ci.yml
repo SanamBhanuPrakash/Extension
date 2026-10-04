@@ -90,6 +90,16 @@ jobs:
         if: matrix.node == '22.x'
         run: node test/e2e/run.mjs --no-color
 
+      # What the extension costs, which is what gets one uninstalled. The
+      # budgets are in test/perf/run.mjs with the reasoning for each; they
+      # fail the build the same way a wrong answer does. This job is also the
+      # only thing in CI that drives a *moving* page, and the only thing that
+      # would have caught a response scanner whose debounce had no ceiling —
+      # which is to say, one that never ran on any site it matched.
+      - name: What it costs to have Chhanni on the page
+        if: matrix.node == '22.x'
+        run: node test/perf/run.mjs --no-color
+
       - name: The package is reproducible
         if: matrix.node == '22.x'
         run: |

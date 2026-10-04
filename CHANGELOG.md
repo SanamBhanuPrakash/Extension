@@ -1,5 +1,109 @@
 # Changelog
 
+## Unreleased
+
+A performance suite, and the three defects it found were not performance
+defects. Every fixture in the browser suite was a static page, and the
+response scanner is driven by a MutationObserver — so on a static page it is
+correct to do nothing, and nothing is what it had been measured doing.
+
+### The response scanner never ran on any site it matched
+
+The debounce was cleared and reset on every mutation, with no ceiling. Any page
+that mutates more often than the interval reset the timer forever.
+
+Every product on the match list keeps something moving in the DOM: a typing
+indicator, a caret, a shimmer, a token counter. Measured in Chromium with an
+indicator ticking every 400 ms, a reply carrying a credential streamed in full
+and **no notice appeared** for the fifteen seconds the test waited. A
+documented feature was dead on arrival on all twenty-three sites it was written
+for, and 115 unit tests had nothing to say about it because there is no DOM
+there.
+
+There is a hard ceiling now: a pass runs within three seconds of the first
+mutation that is still unscanned, whatever else arrives.
+
+### The reply that just arrived was read seventy-first
+
+The scan mark started at zero and walked forward one window per pass, which is
+right for completeness and backwards for urgency. Notice latency on a streamed
+credential, measured:
+
+    50 turns      3.0 s
+    600 turns     4.9 s
+    1500 turns   10.6 s
+
+— a number that grew with the length of a transcript that was already on
+screen before the page loaded. Passes read forward from where the text last
+ended now, which is the new text and nothing else: **2.8 / 2.9 / 3.0 s**, flat.
+The transcript that was already there is read newest-first from an idle
+callback, under a CPU budget, and whatever is not reached is reported as
+unread rather than passed over in silence.
+
+### Enterprise policy was on the critical path for everybody
+
+The bootstrap awaited `chrome.storage.managed.get(null)` before the engine
+would admit to being ready. That read resolves through an IPC whose reply is
+dispatched on the renderer's main thread, and on a busy page that thread is not
+available:
+
+    1500-turn thread, renderer idle                      3.0 s
+    the same, reply streaming and an indicator, at 4x   57.8 s
+
+Fifty-eight seconds — not of being wrong, because the holding listeners are
+attached long before and nothing leaked, but of a tool that answers every paste
+with *still starting, that was held*. Open a long conversation, paste a key,
+and Chhanni told you to wait a minute.
+
+Readiness depends on the person's own settings now. A profile that has never
+seen managed policy reads it in the background; if it turns out to exist, that
+is remembered and every later load waits for it.
+
+### A reply only had to be critical to be worth mentioning
+
+A Slack incoming webhook is `high`. So is a SendGrid key, a Twilio key, a
+Notion token, a Grafana token, an IBAN — twenty-one shapes that are
+unmistakably live credentials, every one of which a model can echo back into a
+conversation, and about every one of which Chhanni said nothing at all.
+
+`high` is reported now, minus what would make it noise: the ten advisory
+context detectors, `jwt` and `bearer_header` (a shape, not a vendor — a reply
+explaining JWTs contains JWTs), a postal address, and anything of `possible`
+confidence.
+
+### The caps say when they fired
+
+The page-text sweep stops at 20,000 elements and 200 shadow roots, and the
+history walk at 120,000 characters or 400 ms. Every one of those used to fire
+silently, so *we stopped looking* was presented exactly like *nothing found* —
+the substitution this product exists to catch, committed by the product. Each
+cap records why it fired and the popup says so on the tab it happened on.
+
+### What it costs, now measured
+
+`npm run test:perf` opens conversations of 50, 600 and 1500 turns and holds the
+numbers to budgets that fail the build. Medians of three runs, each stated over
+the same page with no extension loaded:
+
+    blocking added, 5 s idle            +0 ms   +0 ms   +0 ms
+    blocking added, a reply streaming   +0 ms   +0 ms   +0 ms
+    paste to verdict                     -1 ms  +11 ms  +35 ms
+    Send held                            +7 ms  +27 ms  +34 ms
+
+Two notes on the method, both of which the first version of this suite got
+wrong. It windows from quiet rather than from `load`, because a 1.7 MB document
+spends over a second in parse and layout and that is not a cost this extension
+imposes — the first version reported a 960 ms "cliff" that was entirely its own
+windowing. And the budgets are deltas, because at 4x throttle that fixture
+blocks for about four seconds with nothing installed at all.
+
+The uncomfortable number is kept too: at 4x on the 1500-turn fixture, Chhanni
+adds about 1.3 s of blocking across a streaming reply. [Decision
+35](docs/DECISIONS.md) records the fix for that and why it is not in this
+change.
+
+- 115 tests, 27 browser cases, and a performance suite with budgets.
+
 ## 0.4.0 — 2026-10-01
 
 A second audit, and the four worst things it found were all the same

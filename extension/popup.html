@@ -53,6 +53,14 @@
   .coverage p b { font-weight: 590; }
   .coverage .ok { color: var(--ok); }
   .coverage .idle { color: var(--high); }
+  .coverage .pagestate {
+    font-size: 11px; line-height: 1.45; color: var(--high);
+    margin: -4px 0 8px; padding-left: 12px; position: relative;
+  }
+  .coverage .pagestate::before {
+    content: ''; position: absolute; left: 0; top: 6px;
+    width: 3px; height: 3px; border-radius: 50%; background: var(--high);
+  }
   .coverage .never { margin: 9px 0 0; padding: 0; list-style: none; max-height: none; overflow: visible; -webkit-mask-image: none; mask-image: none; }
   .coverage .never li {
     border: 0; padding: 3px 0 3px 12px; position: relative;
@@ -96,6 +104,7 @@
   <section class="glass coverage" id="coverageSection">
     <h2>Coverage</h2>
     <p id="coverageLine">checking…</p>
+    <p id="pageState" class="pagestate" hidden></p>
     <button class="add" id="watchSite" hidden>Watch this site too</button>
     <button class="add" id="unwatchSite" hidden>Stop watching this site</button>
     <ul class="never">
