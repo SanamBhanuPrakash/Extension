@@ -289,8 +289,36 @@
   // The third one did not exist. "We could not determine whether this is
   // dangerous" is not evidence that it is safe, and it must never be rendered
   // as silence.
+  /**
+   * The severities that make the panel appear, for the extension.
+   *
+   * The engine's library default puts `low` in neither the block nor the warn
+   * set, which is right for a CLI that prints every finding regardless of
+   * verdict. In the extension the verdict is the only thing that decides
+   * whether the user ever sees anything, so leaving `low` out meant a pasted
+   * email produced a finding, a verdict of 'clean', and silence — in every
+   * mode, including the one whose label reads "Everything found — including
+   * emails and phone numbers". Measured across all three modes: a lone email
+   * and a lone phone number raised no panel on paste, no panel on send, and
+   * were sent.
+   *
+   * A settings page naming the two things that can never fire is not a wording
+   * problem. It is the interface claiming coverage the engine does not have,
+   * which is the one failure this project exists not to have.
+   *
+   * With `low` in the warn set both labels become true: the panel appears on
+   * paste for anything at all, and the send is interrupted by `block` in warn
+   * mode or by anything found in strict mode.
+   */
+  const scanPolicy = () => ({
+    ...policy,
+    block: ['critical'],
+    warn: ['high', 'medium', 'low'],
+  });
+
   function safeScan(text, opts) {
-    try { return { ok: true, result: scan(text, opts ? { ...policy, ...opts } : policy) }; }
+    const p = scanPolicy();
+    try { return { ok: true, result: scan(text, opts ? { ...p, ...opts } : p) }; }
     catch (err) { return { ok: false, err }; }
   }
 
@@ -1085,7 +1113,7 @@
         doc = { status: 'opaque', kind: 'unreadable', text: '',
                 reason: 'This file could not be parsed, so it was not inspected.' };
       }
-      const result = doc.text ? scan(doc.text, policy) : nothingFound();
+      const result = doc.text ? scan(doc.text, scanPolicy()) : nothingFound();
       reports.push({
         file, bytes, ...result,
         text: doc.text || '', status: doc.status, kind: doc.kind,
@@ -1171,7 +1199,23 @@
 
     // Nothing found, but something could not be read: say so rather than
     // letting silence imply the file was checked.
+    //
+    // In strict mode a notice is not enough. "Everything found" reads as a
+    // promise about findings, and an artifact nobody could open has none by
+    // definition — measured: a 20 MB opaque binary was accepted in strict mode
+    // with a toast. The mode that calls itself safest is the one where "I could
+    // not look at this" has to be a decision rather than a notification.
     if (!all.length && !strippable.length) {
+      if (coverage.length && policy.mode === 'strict') {
+        showCannotInspect({
+          what: files.length === 1 ? files[0].name : `${files.length} files`,
+          detail: coverage.length === 1 ? coverage[0]
+            : `${coverage.length} of these could not be read: ${coverage.slice(0, 3).join('; ')}`,
+          onProceed: () => onAllow(files),
+          onCancel,
+        });
+        return;
+      }
       if (coverage.length && policy.mode !== 'off') {
         showNotice(coverage.length === 1
           ? coverage[0]

@@ -589,6 +589,79 @@ await test('a host page that hides the panel still cannot send', 'hostile.html',
   t.equal(JSON.stringify(await sent(p)), '[]', 'hiding the panel let the send through');
 });
 
+// ─────────────────────────────────── the three modes, and what they promise
+//
+// The settings page makes three specific promises. They were measured across
+// every mode and every severity, and one of them was false: `low` sat in
+// neither the block nor the warn set, so a pasted email produced a finding, a
+// verdict of 'clean' and silence — in strict too, whose label names emails and
+// phone numbers as the thing it catches. A settings page naming the two things
+// that can never fire is the interface claiming coverage the engine does not
+// have.
+
+async function withMode(ctx, mode) {
+  const admin = await ctx.newPage();
+  await admin.goto('chrome://extensions'); await admin.waitForTimeout(700);
+  const id = await admin.evaluate(() => document.querySelector('extensions-manager')?.shadowRoot
+    ?.querySelector('extensions-item-list')?.shadowRoot?.querySelector('extensions-item')?.id);
+  const opt = await ctx.newPage();
+  await opt.goto(`chrome-extension://${id}/options.html`); await opt.waitForTimeout(500);
+  await opt.evaluate(async (m) => { await chrome.storage.sync.set({ policy: { mode: m, disabled: [], allow: [] } }); }, mode);
+  await opt.close(); await admin.close();
+}
+
+await test('strict stops a low-severity finding, which is what its label says', 'app-textarea.html', async (p, t, ctx) => {
+  await withMode(ctx, 'strict');
+  await p.reload(); await p.waitForTimeout(READY_MS);
+  await p.locator('#prompt-textarea').fill('mail me at ravi.iyer@acmecorp.in');
+  await p.locator('#send').click();
+  await p.waitForTimeout(800);
+  t.ok(await panelUp(p), 'strict let a lone email through — its label names emails specifically');
+  t.equal(JSON.stringify(await sent(p)), '[]', 'the provider received it anyway');
+});
+
+await test('warn shows a low-severity finding on paste but does not block the send', 'app-textarea.html', async (p, t, ctx) => {
+  await withMode(ctx, 'warn');
+  await p.reload(); await p.waitForTimeout(READY_MS);
+  await p.evaluate(() => navigator.clipboard.writeText('mail me at ravi.iyer@acmecorp.in'));
+  await p.locator('#prompt-textarea').click();
+  await p.keyboard.press('ControlOrMeta+V');
+  await p.waitForTimeout(800);
+  t.ok(await panelUp(p), 'warn showed nothing on paste; the label says low-risk findings are shown');
+  await p.keyboard.press('Escape');
+  await p.waitForTimeout(300);
+  await p.locator('#prompt-textarea').fill('mail me at ravi.iyer@acmecorp.in');
+  await p.locator('#send').click();
+  await p.waitForTimeout(800);
+  t.ok((await sent(p)).length === 1, 'warn blocked a send it promises never to block');
+});
+
+await test('strict holds a file it could not inspect, rather than mentioning it', 'app-textarea.html', async (p, t, ctx) => {
+  await withMode(ctx, 'strict');
+  await p.reload(); await p.waitForTimeout(READY_MS);
+  await p.evaluate(() => {
+    const dt = new DataTransfer();
+    const big = new Uint8Array(20 * 1024 * 1024); big.fill(0xab);
+    dt.items.add(new File([big], 'archive.bin', { type: 'application/octet-stream' }));
+    const i = document.getElementById('picker'); i.files = dt.files;
+    i.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await p.waitForTimeout(3000);
+  t.ok(await panelUp(p), 'strict accepted an entirely uninspected 20 MB file with only a toast');
+  t.equal((await files(p)).length, 0, 'the file reached the page before the user decided');
+});
+
+await test('off intercepts nothing at all', 'app-textarea.html', async (p, t, ctx) => {
+  await withMode(ctx, 'off');
+  await p.reload(); await p.waitForTimeout(READY_MS);
+  await p.locator('#prompt-textarea').fill(`my key is ${KEY}`);
+  await p.locator('#send').click();
+  await p.waitForTimeout(800);
+  t.ok(!(await panelUp(p)), 'off showed a panel');
+  t.ok((await sent(p)).length === 1, 'off blocked a send');
+});
+
+
 // ──────────────────────────────────────────── what an approval covers
 //
 // "Send as-is" is a decision about one message. It used to open a two-second

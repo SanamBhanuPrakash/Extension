@@ -556,6 +556,46 @@ nothing can.
 
 ---
 
+## 15c. The three modes, measured
+
+The settings page makes three promises. They are listed here as a table
+because one of them used to be false, and the way it was false is worth
+keeping in view: `low` severity sat in neither the block nor the warn set, so
+a pasted email produced a finding, a verdict of `clean`, and silence — in
+strict as well, whose own label names emails and phone numbers as the thing it
+catches. A settings page that names the two things which can never fire is not
+a wording problem. It is the interface claiming coverage the engine does not
+have.
+
+Measured across every mode and every severity, and now asserted in
+`test/e2e/`:
+
+| | strict | warn | off |
+|---|---|---|---|
+| nothing found | sends | sends | sends |
+| low — email, phone | **panel, send stopped** | panel on paste, send allowed | nothing |
+| medium | **panel, send stopped** | panel on paste, send allowed | nothing |
+| high | panel, send stopped | panel, send stopped | nothing |
+| critical | panel, send stopped | panel, send stopped | nothing |
+| a file nothing could read | **panel, held until you decide** | named in a notice, then allowed | nothing |
+| a partially read file | panel names the unread part | panel names the unread part | nothing |
+| the scanner threw | held, with an explicit override | held, with an explicit override | nothing |
+
+Two things this table says that are easy to miss.
+
+**`off` means off.** No paste handler, no send handler, no file inspection, no
+response scanning, and no notice about a file that could not be read. It is not
+a quieter mode; it is the absence of one.
+
+**Strict is the mode where "I could not look at this" is a decision.** An
+artifact nobody could open has no findings by definition, so a mode that only
+promises to stop on findings would wave a 20 MB opaque binary through — which
+is what it did, with a toast. In strict it now raises the panel and waits. In
+warn it is still named and still allowed, because a mode most people leave on
+has to stay usable.
+
+---
+
 ## 16. It is advisory, not enforcement
 
 "Send as-is" always works. That is deliberate — a tool that cannot be
