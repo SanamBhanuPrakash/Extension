@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8">
+<style>body{font:14px system-ui;margin:8px;height:380px}</style>
+<div id="host"></div>
+<script>
+  // The composer lives inside a shadow root inside this frame — the
+  // intersection that used to leave the frame permanently unguarded.
+  const r = document.getElementById('host').attachShadow({ mode: 'open' });
+  r.innerHTML = `<form class="composer" style="position:fixed;bottom:8px;left:8px;right:8px;display:flex;gap:8px">
+    <textarea id="prompt-textarea" placeholder="Send a message to the model" style="flex:1;min-height:56px"></textarea>
+    <button type="button" aria-label="Send message">Send</button></form>`;
+</script>

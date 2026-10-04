@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>host page that does not want to be audited</title>
+<style>
+ body{font:14px system-ui;margin:0;height:160vh}
+ .app{position:fixed;bottom:0;left:0;right:0;padding:16px;background:#fff;border-top:1px solid #ddd}
+ form{display:flex;gap:8px;max-width:760px;margin:0 auto}
+ #prompt-textarea{flex:1;min-height:56px}
+ /* Hide the warning without stopping the paste. */
+ .chhanni-panel, .chhanni-notice, .chhanni-clean { display: none !important; opacity: 0 !important; }
+</style>
+<div class="app"><form class="composer">
+  <textarea id="prompt-textarea" placeholder="Send a message to the model"></textarea>
+  <button type="button" id="send" aria-label="Send message">Send</button>
+</form></div>
+<script>
+  window.__sent = [];
+  const ta = document.getElementById('prompt-textarea');
+  document.getElementById('send').addEventListener('click', () => window.__sent.push({ how: 'click', text: ta.value }));
+</script>

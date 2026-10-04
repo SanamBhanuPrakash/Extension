@@ -25,8 +25,40 @@
   // never does. Until then it holds one idle MutationObserver and nothing
   // else.
   const EDITABLE = 'textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]';
+
+  /**
+   * querySelector does not cross a shadow boundary.
+   *
+   * That one sentence was a hole big enough to drive the whole extension
+   * through. The gate below holds a subframe until it contains something a
+   * person can type into; `all_frames` puts us in the frame and the shadow-DOM
+   * handling elsewhere reads the composer once we are running. Both features
+   * worked. They did not compose: a composer inside an iframe inside a shadow
+   * root left `document.querySelector` returning null forever, so the promise
+   * never resolved, the engine never loaded, and that frame was unguarded for
+   * the life of the page — with no error anywhere. Measured against a control
+   * with the same composer outside a shadow root, which loaded normally.
+   *
+   * Bounded, because this runs on every mutation in every subframe of a page
+   * we do not control.
+   */
+  const MAX_ROOTS_SCANNED = 100;
+  const deepHasEditable = (root, depth = 0) => {
+    try {
+      if (root.querySelector(EDITABLE)) return true;
+      if (depth > 4) return false;
+      let seen = 0;
+      for (const node of root.querySelectorAll('*')) {
+        const sub = node.shadowRoot;          // null for closed roots
+        if (!sub) continue;
+        if (++seen > MAX_ROOTS_SCANNED) return false;
+        if (deepHasEditable(sub, depth + 1)) return true;
+      }
+    } catch { /* detached or cross-origin */ }
+    return false;
+  };
   const hasEditable = () => {
-    try { return !!document.querySelector(EDITABLE); } catch { return false; }
+    try { return deepHasEditable(document); } catch { return false; }
   };
   if (window !== window.top && !hasEditable()) {
     await new Promise((resolve) => {
@@ -42,15 +74,116 @@
     });
   }
 
-  const { scan, groupFindings } = await import(url('engine/detect.js'));
-  const { exposureScore, BAND_TEXT, SCORE_NOTE } = await import(url('engine/risk.js'));
-  const { REGIME_NOTE } = await import(url('engine/regulations.js'));
-  const { isComposer } = await import(url('engine/composer.js'));
-  const { mergePolicy } = await import(url('engine/managed.js'));
-  const { redact } = await import(url('engine/redact.js'));
-  const { extractDocument, rewriteMode, rewriteBytes, describeKind } =
-    await import(url('engine/documents.js'));
-  const store = await import(url('store.js'));
+  // ───────────────────────────────────────────────── listener-first bootstrap
+  //
+  // The engine used to be eight sequential dynamic imports and two storage
+  // round-trips, all awaited *before* the first listener was attached.
+  // Measured on three cold profiles: 1,986 / 1,973 / 1,982 ms from navigation
+  // to the first `addEventListener`. For two seconds the page was live, the
+  // extension looked installed, and nothing was watching. Somebody who copies
+  // a key, opens the tab and pastes lands inside that window.
+  //
+  // So the listeners go on first and the engine loads underneath them. While
+  // it is loading, anything that would carry content out is held rather than
+  // passed, because "not ready" is not the same as "nothing found" — the same
+  // rule the whole product is built on, applied to its own startup.
+  let engineState = 'loading';            // loading | ready | failed
+  let engineError = null;
+
+  const looksEditable = (el) =>
+    !!el && (el.tagName === 'TEXTAREA' || el.isContentEditable === true);
+
+  /** Cheap, engine-free: does this element carry text a person typed? */
+  const rawValue = (el) => {
+    try { return el.tagName === 'TEXTAREA' ? el.value : el.innerText; } catch { return ''; }
+  };
+
+  let bootNotice = null;
+  function holdNotice() {
+    if (bootNotice && bootNotice.isConnected) return;
+    bootNotice = document.createElement('div');
+    bootNotice.className = 'chhanni-notice chhanni-in';
+    bootNotice.setAttribute('role', 'status');
+    bootNotice.textContent = 'Chhanni is still starting \u2014 that was held, not checked. Try again in a moment.';
+    try { document.body.appendChild(bootNotice); } catch { /* no body yet */ }
+    setTimeout(() => { bootNotice?.remove(); bootNotice = null; }, 6000);
+  }
+
+  function holdWhileLoading(e) {
+    if (engineState !== 'loading') return;
+    let carries = false;
+    try {
+      if (e.type === 'paste' || e.type === 'drop') carries = true;
+      else if (e.type === 'change') carries = e.target instanceof HTMLInputElement && e.target.type === 'file';
+      else if (e.type === 'keydown') carries = e.key === 'Enter' && !e.shiftKey && !e.isComposing && looksEditable(e.target);
+      else if (e.type === 'submit') carries = true;
+      else if (e.type === 'click') {
+        // Only a control that plausibly sends something non-empty. Holding an
+        // arbitrary click for two seconds would break the page.
+        const btn = e.target?.closest?.('button, [role="button"], input[type="submit"]');
+        const scope = btn && (btn.closest('form') || btn.parentElement?.parentElement);
+        carries = !!scope && [...scope.querySelectorAll(EDITABLE)].some((el) => rawValue(el).trim().length > 0);
+      }
+    } catch { carries = false; }
+    if (!carries) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    holdNotice();
+  }
+
+  const BOOT_EVENTS = ['paste', 'drop', 'change', 'keydown', 'submit', 'click'];
+  for (const type of BOOT_EVENTS) {
+    try { document.addEventListener(type, holdWhileLoading, true); } catch { /* no document */ }
+  }
+  const releaseHold = () => {
+    for (const type of BOOT_EVENTS) {
+      try { document.removeEventListener(type, holdWhileLoading, true); } catch {}
+    }
+  };
+
+  // Parallel, not sequential: eight round-trips to the extension's own
+  // resources have no reason to queue behind each other.
+  let scan, groupFindings, exposureScore, BAND_TEXT, SCORE_NOTE, REGIME_NOTE,
+      isComposer, isSendControl, SEND_SELECTOR, mergePolicy, redact, pseudonymise,
+      extractDocument, rewriteMode, rewriteBytes, describeKind, store;
+  try {
+    const [detectM, riskM, regM, compM, manM, redM, docM, storeM] = await Promise.all([
+      import(url('engine/detect.js')), import(url('engine/risk.js')),
+      import(url('engine/regulations.js')), import(url('engine/composer.js')),
+      import(url('engine/managed.js')), import(url('engine/redact.js')),
+      import(url('engine/documents.js')), import(url('store.js')),
+    ]);
+    ({ scan, groupFindings } = detectM);
+    ({ exposureScore, BAND_TEXT, SCORE_NOTE } = riskM);
+    ({ REGIME_NOTE } = regM);
+    ({ isComposer, isSendControl, SEND_SELECTOR } = compM);
+    ({ mergePolicy } = manM);
+    ({ redact, pseudonymise } = redM);
+    ({ extractDocument, rewriteMode, rewriteBytes, describeKind } = docM);
+    store = storeM;
+  } catch (err) {
+    // extension/engine/ is generated by scripts/build.js and is not in the
+    // repository. A clone loaded with "Load unpacked" before running the build
+    // reaches exactly here — and Chrome shows the extension as enabled with no
+    // error anywhere in its UI. Saying nothing would leave a security tool
+    // that is installed, trusted, and inert.
+    engineState = 'failed';
+    engineError = err;
+    releaseHold();
+    if (window === window.top) {
+      const warn = () => {
+        const box = document.createElement('div');
+        box.className = 'chhanni-notice chhanni-in';
+        box.setAttribute('role', 'alert');
+        box.textContent = 'Chhanni is not running on this page: its engine did not load, so nothing is being checked. '
+          + 'Reload the extension — and if you are running it unpacked, run `node scripts/build.js` first.';
+        try { document.body.appendChild(box); } catch {}
+      };
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', warn, { once: true });
+      else warn();
+    }
+    return;
+  }
 
   // panel.css is injected by the manifest, but a relative url() inside it
   // would resolve against the host page's origin. The face is declared here
@@ -93,20 +226,146 @@
     } catch { return ''; }
   }
 
+  /**
+   * Policy arrives from two places neither of which this code controls: a
+   * synced value that may predate the current schema, and an administrator's
+   * GPO or plist. A scalar where an array belongs used to be fatal — `new
+   * Set(5)` throws, `mergePolicy` threw at load and killed the whole content
+   * script, and `scan()` threw per-paste and let the paste through. Both were
+   * reachable by a typo, with no attacker involved. Coerce at the boundary and
+   * the rest of the engine can keep assuming arrays.
+   */
+  const ARRAY_FIELDS = ['disabled', 'allow', 'block', 'warn', 'requiredDetectors', 'neverAllow', 'codenames'];
+  function sanitisePolicy(raw) {
+    const out = (raw && typeof raw === 'object') ? { ...raw } : {};
+    for (const key of ARRAY_FIELDS) {
+      if (!(key in out)) continue;
+      const v = out[key];
+      if (Array.isArray(v)) out[key] = v.filter((x) => typeof x === 'string');
+      else if (typeof v === 'string') out[key] = [v];
+      else delete out[key];               // fall back to the default for that field
+    }
+    if (out.mode !== undefined && !['strict', 'warn', 'off'].includes(out.mode)) delete out.mode;
+    return out;
+  }
+
   async function loadPolicy() {
     let user = DEFAULTS;
     try {
       const stored = await chrome.storage.sync.get('policy');
-      if (stored.policy) user = { ...DEFAULTS, ...stored.policy };
+      if (stored.policy) user = { ...DEFAULTS, ...sanitisePolicy(stored.policy) };
     } catch { /* first run; defaults are fine */ }
     let managed = null;
     try { managed = (await chrome.storage.managed.get(null)) || null; } catch { /* unmanaged */ }
-    policy = mergePolicy(user, managed && Object.keys(managed).length ? managed : null);
+    const admin = managed && Object.keys(managed).length ? sanitisePolicy(managed) : null;
+    try {
+      policy = mergePolicy(user, admin);
+    } catch {
+      // A policy we cannot merge is not a reason to stop protecting the page.
+      policy = { ...DEFAULTS };
+    }
     policy.fingerprintSalt = salt;
   }
   salt = await loadSalt();
   await loadPolicy();
   chrome.storage.onChanged?.addListener(() => { loadPolicy().catch(() => {}); });
+
+  // Everything the handlers need is in place. Stand the holding listeners down.
+  engineState = 'ready';
+  releaseHold();
+
+  // ───────────────────────────────────────────── three outcomes, not two
+  //
+  // The old shape was binary: `scan()` returned, and anything it threw escaped
+  // the listener before `preventDefault()` ran, so the paste went through. A
+  // malformed policy was enough to do it, and the user saw a perfectly normal
+  // paste. That is the worst failure a tool like this can have, because it is
+  // indistinguishable from success.
+  //
+  //   clean              inspected, nothing found      -> pass silently
+  //   finding            inspected, something found    -> stop, show, offer redact
+  //   could not inspect  no information at all         -> stop, say so, explicit override
+  //
+  // The third one did not exist. "We could not determine whether this is
+  // dangerous" is not evidence that it is safe, and it must never be rendered
+  // as silence.
+  function safeScan(text, opts) {
+    try { return { ok: true, result: scan(text, opts ? { ...policy, ...opts } : policy) }; }
+    catch (err) { return { ok: false, err }; }
+  }
+
+  /**
+   * Approval bound to content, not to a clock.
+   *
+   * "Send as-is" used to open a two-second window during which *any* Enter
+   * went through unchecked — measured: a completely different secret, typed
+   * and sent inside the window, left with no panel. An approval is a decision
+   * about one thing, so it is keyed to that thing and spent when it is used.
+   * The short expiry is a backstop for a re-dispatch that never lands, not the
+   * mechanism.
+   */
+  let approval = null;
+  function digest(value) {
+    const str = String(value);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return `${str.length}:${h.toString(16)}`;
+  }
+  const approve = (key) => { approval = { key, until: Date.now() + 4000 }; };
+  function approved(key) {
+    if (!approval || approval.key !== key || Date.now() > approval.until) return false;
+    approval = null;                      // one shot, then gone
+    return true;
+  }
+
+  /** The panel for "we could not look at this", with the override made explicit. */
+  function showCannotInspect({ what, detail, onProceed, onCancel }) {
+    closePanel();
+    panel = el('div', 'chhanni-panel chhanni-block chhanni-band-elevated');
+    panel.setAttribute('role', 'alertdialog');
+    panel.setAttribute('aria-live', 'assertive');
+
+    const head = el('div', 'chhanni-head');
+    const gauge = el('div', 'chhanni-gauge');
+    gauge.append(el('b', null, '?'), el('span', null, '/100'));
+    gauge.setAttribute('aria-label', 'Exposure unknown');
+    const headText = el('div', 'chhanni-headtext');
+    headText.append(el('strong', null, 'Chhanni could not check this.'));
+    headText.append(el('p', null, what));
+    headText.append(el('span', 'chhanni-scorenote', 'Not inspected is not the same as clean.'));
+    head.append(gauge, headText);
+    const close = el('button', 'chhanni-x', '\u00d7');
+    close.setAttribute('aria-label', 'Dismiss');
+    close.onclick = () => { closePanel(); onCancel?.(); };
+    head.appendChild(close);
+    panel.appendChild(head);
+
+    const body = el('div', 'chhanni-body');
+    const block = el('div', 'chhanni-coverage');
+    block.appendChild(el('h3', null, 'What went wrong'));
+    const list = el('ul');
+    list.appendChild(el('li', null, detail));
+    block.appendChild(list);
+    body.appendChild(block);
+    panel.appendChild(body);
+
+    const actions = el('div', 'chhanni-actions');
+    const cancelBtn = el('button', 'chhanni-primary', 'Stop and let me look');
+    cancelBtn.onclick = () => { closePanel(); onCancel?.(); };
+    const proceedBtn = el('button', 'chhanni-ghost', 'Send without checking');
+    proceedBtn.onclick = () => { closePanel(); onProceed?.(); };
+    actions.append(cancelBtn, proceedBtn);
+    panel.appendChild(actions);
+    panel.appendChild(el('div', 'chhanni-foot', 'Checked on this device. Chhanni made no network request.'));
+
+    document.body.appendChild(panel);
+    requestAnimationFrame(() => panel?.classList.add('chhanni-in'));
+    cancelBtn.focus();
+    onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); closePanel(); onCancel?.(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+  }
 
   // ------------------------------------------------------------- composer
   //
@@ -163,6 +422,9 @@
     sel.addRange(range);
     document.execCommand('insertText', false, value);
   }
+
+  /** Rule ids whose value has a shape worth preserving as an alias. */
+  const ALIASABLE = new Set(['person_name', 'postal_address', 'email', 'phone_india']);
 
   // ---------------------------------------------------------------- panel
   let panel = null;
@@ -231,8 +493,8 @@
    * is a decision someone can actually make at speed; the detail below is for
    * whoever wants it.
    */
-  function showPanel({ result, title, onRedact, onProceed, onDismiss,
-                       redactLabel, proceedLabel, coverage, plan }) {
+  function showPanel({ result, title, onRedact, onProceed, onDismiss, onPseudonymise,
+                       redactLabel, proceedLabel, coverage, plan, destination, sendText }) {
     closePanel();
     const { risk, band, table, groups, findings, regimeNames } = result;
     const verdict = result.verdict;
@@ -354,7 +616,18 @@
     redactBtn.onclick = () => { closePanel(); record('redacted'); onRedact(); };
     const proceedBtn = el('button', 'chhanni-ghost', proceedLabel || 'Send as-is');
     proceedBtn.onclick = () => { closePanel(); record('sent'); onProceed(); };
-    actions.append(redactBtn, proceedBtn);
+    // Aliases, where the shape of the value is the thing the model needs.
+    // Offered only when at least one finding is identity-shaped, because
+    // "Person_A" helps and a pseudonymised API key does not exist.
+    const aliasable = onPseudonymise && findings.some((f) => !f.advisory && ALIASABLE.has(f.ruleId));
+    if (aliasable) {
+      const aliasBtn = el('button', 'chhanni-second', 'Use aliases');
+      aliasBtn.title = 'Replace names, emails, phone numbers and addresses with stable stand-ins, so the model can still follow who is who.';
+      aliasBtn.onclick = () => { closePanel(); record('redacted'); onPseudonymise(); };
+      actions.append(redactBtn, aliasBtn, proceedBtn);
+    } else {
+      actions.append(redactBtn, proceedBtn);
+    }
     panel.appendChild(actions);
 
     // Exactly what the redact button will do to each file. A .docx cannot be
@@ -377,6 +650,35 @@
         : `Nothing here can be replaced with a placeholder. These ${advisory} are what the text is about, not values in it. This is a decision, not a fix.`));
       block.appendChild(list);
       panel.appendChild(block);
+    }
+
+    // ── what actually leaves, if you press the primary button ──
+    //
+    // A findings count answers "how bad". It does not answer the question the
+    // person is actually asking, which is "what is about to reach the model".
+    // Those are different, and the second one is the only one they can act on.
+    if (destination || sendText !== undefined) {
+      const recv = el('div', 'chhanni-receive');
+      recv.appendChild(el('h3', null, destination ? `What ${destination} will receive` : 'What the model will receive'));
+      const lines = el('ul');
+      if (redactable) {
+        lines.appendChild(el('li', null,
+          `${redactable} value${redactable === 1 ? '' : 's'} replaced with ${onPseudonymise ? 'a placeholder or an alias' : 'a placeholder'}`));
+      }
+      if (advisory) {
+        lines.appendChild(el('li', null,
+          `${advisory} thing${advisory === 1 ? '' : 's'} marked “context” stay as written`));
+      }
+      if (typeof sendText === 'string') {
+        const kept = Math.max(0, sendText.length - findings.filter((f) => !f.advisory)
+          .reduce((n, f) => n + (f.end - f.start), 0));
+        lines.appendChild(el('li', null, `${kept.toLocaleString()} characters of your message, unchanged`));
+      }
+      for (const line of (coverage || []).slice(0, 2)) {
+        lines.appendChild(el('li', 'chhanni-receive-gap', `Not inspected — ${line}`));
+      }
+      recv.appendChild(lines);
+      panel.appendChild(recv);
     }
 
     const hint = el('div', 'chhanni-hint');
@@ -436,6 +738,37 @@
     document.body.appendChild(noticeEl);
     requestAnimationFrame(() => noticeEl?.classList.add('chhanni-in'));
     noticeTimer = setTimeout(() => { noticeEl?.remove(); noticeEl = null; }, 14000);
+  }
+
+  // ─────────────────────────────────────────────────────── the clean state
+  //
+  // Silence meant six different things: everything is fine, the extension is
+  // not running, the site is not watched, the engine is still loading, the
+  // scan failed, or the page changed shape. A security tool cannot let its
+  // success and its failure look identical — and this audit found two cases
+  // where the difference mattered and nobody could see it.
+  //
+  // So a check that found nothing says so, once, briefly, and gets out of the
+  // way. It is deliberately not a badge that sits there: a permanent green
+  // tick is read as a guarantee, and what this can honestly report is "I
+  // looked at this, just now, and here is how much of it I saw".
+  let cleanPill = null;
+  let cleanTimer = null;
+
+  function markClean(result) {
+    if (policy.showClean === false) return;
+    const gaps = scanCoverage(result, 'This');
+    clearTimeout(cleanTimer);
+    cleanPill?.remove();
+    cleanPill = el('div', `chhanni-clean${gaps.length ? ' chhanni-clean-partial' : ''}`);
+    cleanPill.setAttribute('role', 'status');
+    cleanPill.append(el('span', 'chhanni-clean-tick', gaps.length ? '\u25cb' : '\u2713'));
+    cleanPill.appendChild(el('span', null, gaps.length
+      ? 'Checked \u2014 part of it was too large to read'
+      : 'Checked \u2014 nothing found'));
+    try { document.body.appendChild(cleanPill); } catch { return; }
+    requestAnimationFrame(() => cleanPill?.classList.add('chhanni-in'));
+    cleanTimer = setTimeout(() => { cleanPill?.remove(); cleanPill = null; }, gaps.length ? 4200 : 1900);
   }
 
   const seenResponses = new Set();
@@ -561,14 +894,70 @@
   document.addEventListener('paste', (e) => {
     const target = eventTarget(e);
     if (!isEditable(target) || policy.mode === 'off') return;
+
+    // ── a clipboard can carry a file, and a screenshot is the commonest one ──
+    //
+    // This read `getData('text/plain')` and returned when it was empty, which
+    // is exactly what an image clipboard produces. Measured: a pasted PNG
+    // reached the page as an attachment with no panel, no coverage line and no
+    // mention. Meanwhile the drop and file-picker paths already knew how to
+    // inspect an image. The clipboard was simply a third door into the same
+    // room, and nobody was watching it.
+    const pasted = [...(e.clipboardData?.files || [])];
+    if (pasted.length) {
+      const key = digest(pasted.map((f) => `${f.name}:${f.size}:${f.type}`).join('|'));
+      if (approved(`paste-files:${key}`)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      guardFiles(pasted, {
+        onAllow: (allowed) => {
+          // A synthetic ClipboardEvent cannot carry clipboardData in Chromium —
+          // verified, it comes back null — so the paste cannot simply be
+          // replayed. Hand the files over as a drop, which every composer that
+          // accepts a pasted image also accepts, and keep a one-shot approval
+          // so that pressing Ctrl+V again works if this page does not.
+          approve(`paste-files:${key}`);
+          try {
+            target.dispatchEvent(new DragEvent('drop', {
+              dataTransfer: fileListFrom(allowed), bubbles: true, cancelable: true,
+            }));
+          } catch { /* the approval above is the fallback */ }
+        },
+        onCancel: () => {},
+      });
+      return;
+    }
+
     const text = e.clipboardData?.getData('text/plain');
     if (!text) return;
 
-    const result = scan(text, policy);
-    if (result.verdict === 'clean') return;
-
-    e.preventDefault();
-    e.stopPropagation();
+    // ── what the composer keeps is not always what text/plain shows ──
+    //
+    // Chromium's paste sanitiser drops a display:none span, so that vector is
+    // not real. An href and an alt attribute both survive, and neither appears
+    // in text/plain or in innerText — measured: a pasted link carrying a key
+    // in its query string landed in a contenteditable composer with nothing to
+    // see at either interception point. Products that serialise the composer
+    // to Markdown then send the URL.
+    //
+    // So the HTML flavour is scanned too, as *extra* text rather than instead:
+    // the plain text is what the person sees and must still be reported
+    // normally, and the attributes are the part nobody can see.
+    let hidden = '';
+    try {
+      const html = e.clipboardData?.getData('text/html') || '';
+      if (html && html.length < 1_000_000) {
+        const attrs = [];
+        const re = /\s(?:href|src|alt|title|data-[\w-]+)\s*=\s*("[^"]*"|'[^']*')/gi;
+        let m;
+        while ((m = re.exec(html)) !== null && attrs.length < 500) {
+          attrs.push(m[1].slice(1, -1));
+        }
+        const extra = attrs.join('\n');
+        // Only the part that is not already visible in the plain text.
+        if (extra && !text.includes(extra)) hidden = extra;
+      }
+    } catch { /* no HTML flavour on this clipboard */ }
 
     const insert = (value) => {
       if (target.tagName === 'TEXTAREA') {
@@ -581,19 +970,41 @@
       }
     };
 
+    const scanned = safeScan(hidden ? `${text}\n${hidden}` : text);
+    if (!scanned.ok) {
+      e.preventDefault();
+      e.stopPropagation();
+      showCannotInspect({
+        what: 'This paste was held, not checked.',
+        detail: `The scanner failed on this text: ${String(scanned.err?.message || scanned.err).slice(0, 160)}`,
+        onProceed: () => insert(text),
+      });
+      return;
+    }
+
+    const result = scanned.result;
+    if (result.verdict === 'clean') { markClean(result); return; }
+
+    e.preventDefault();
+    e.stopPropagation();
+
     showPanel({
       result,
       title: headline(result, 'in what you pasted'),
       coverage: scanCoverage(result, 'What you pasted'),
-      onRedact: () => insert(redact(text, result.findings).text),
+      destination: location.hostname,
+      sendText: text,
+      // Findings located in the hidden attributes have offsets past the end of
+      // the visible text; redacting against `text` would corrupt it. Replace
+      // within the visible part, and drop the markup entirely when the only
+      // problem was in an attribute — pasting the plain text is the fix.
+      onRedact: () => insert(redact(text, result.findings.filter((f) => f.end <= text.length)).text),
+      onPseudonymise: () => insert(pseudonymise(text, result.findings.filter((f) => f.end <= text.length)).text),
       onProceed: () => insert(text),
     });
   }, true);
 
   const isSubmitKey = (e) => e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.altKey;
-
-  // After "Send as-is" we re-dispatch the key; this stops us catching our own.
-  let bypassUntil = 0;
 
 
   // ═══════════════════════════════════════════════════════════ attachments
@@ -707,12 +1118,24 @@
     return dt;
   }
 
-  let fileBypassUntil = 0;
-
-  /** Shared flow for both drop and file-input selection. */
+  /** Shared flow for drop, file-input selection and a pasted image. */
   async function guardFiles(files, { onAllow, onCancel }) {
     let reports;
-    try { reports = await inspect(files); } catch { onAllow(files); return; }
+    try {
+      reports = await inspect(files);
+    } catch (err) {
+      // This used to be `catch { onAllow(files); return; }` — an inspection
+      // that crashed handed the files straight on, silently. The whole point
+      // of the four-status model is that "could not read" is an outcome the
+      // user gets to see, and that has to hold when the failure is ours.
+      showCannotInspect({
+        what: files.length === 1 ? files[0].name : `${files.length} files were held, not checked.`,
+        detail: `Inspection failed: ${String(err?.message || err).slice(0, 160)}`,
+        onProceed: () => onAllow(files),
+        onCancel,
+      });
+      return;
+    }
 
     const all = reports.flatMap((r) => r.findings);
     const coverage = coverageLines(reports);
@@ -776,9 +1199,11 @@
   }
 
   document.addEventListener('drop', (e) => {
-    if (policy.mode === 'off' || Date.now() < fileBypassUntil) return;
+    if (policy.mode === 'off') return;
     const files = [...(e.dataTransfer?.files || [])];
     if (!files.length) return;
+    const key = `drop:${digest(files.map((f) => `${f.name}:${f.size}`).join('|'))}`;
+    if (approved(key)) return;
 
     const target = eventTarget(e);
     e.preventDefault();
@@ -786,7 +1211,7 @@
 
     guardFiles(files, {
       onAllow: (allowed) => {
-        fileBypassUntil = Date.now() + 2000;
+        approve(`drop:${digest(allowed.map((f) => `${f.name}:${f.size}`).join('|'))}`);
         target.dispatchEvent(new DragEvent('drop', {
           dataTransfer: fileListFrom(allowed), bubbles: true, cancelable: true,
         }));
@@ -797,10 +1222,12 @@
 
   document.addEventListener('change', (e) => {
     const input = eventTarget(e);
-    if (policy.mode === 'off' || Date.now() < fileBypassUntil) return;
+    if (policy.mode === 'off') return;
     if (!(input instanceof HTMLInputElement) || input.type !== 'file') return;
     const files = [...(input.files || [])];
     if (!files.length) return;
+    const key = `pick:${digest(files.map((f) => `${f.name}:${f.size}`).join('|'))}`;
+    if (approved(key)) return;
 
     e.stopPropagation();
     // Detach the selection while we look at it, so nothing uploads underneath us.
@@ -808,7 +1235,7 @@
 
     guardFiles(files, {
       onAllow: (allowed) => {
-        fileBypassUntil = Date.now() + 2000;
+        approve(`pick:${digest(allowed.map((f) => `${f.name}:${f.size}`).join('|'))}`);
         input.files = fileListFrom(allowed).files;
         input.dispatchEvent(new Event('change', { bubbles: true }));
       },
@@ -816,33 +1243,130 @@
     });
   }, true);
 
-  document.addEventListener('keydown', (e) => {
-    if (!isSubmitKey(e) || policy.mode === 'off' || Date.now() < bypassUntil) return;
-    if (panel) return; // the panel owns Enter while it is open
-    const target = eventTarget(e);
-    if (!isEditable(target)) return;
+  // ══════════════════════════════════════════════════════ sending a message
+  //
+  // There are three ways a person sends what they have typed, and until now
+  // exactly one of them was watched.
+  //
+  //   Enter          guarded
+  //   click Send     not guarded  — measured: the key went straight through
+  //   submit a form  not guarded  — measured: the key went straight through
+  //
+  // Enter is the one a developer tests with. It is not the one most people
+  // use, and on a touch device it does not exist at all. So the decision now
+  // lives in one function and all three paths call it, which is also the only
+  // way to be sure they cannot drift apart again.
 
-    const result = scan(readComposer(target), policy);
-    if (result.verdict === 'clean') return;
+  /**
+   * @param {Event} e            the event to cancel if we stop
+   * @param {Element} target     the composer being sent
+   * @param {() => void} resend  replays the original action after approval
+   * @param {string} via         names the path, so an approval for one is not an approval for another
+   */
+  function guardSubmission(e, target, resend, via) {
+    if (panel) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+    const text = readComposer(target);
+    if (!text || !text.trim()) return;
+
+    // Bound to this text, on this path. "Send as-is" used to open a two-second
+    // window in which any Enter went through unchecked — measured with a
+    // completely different secret, which left with no panel.
+    const key = `send:${via}:${digest(text)}`;
+    if (approved(key)) return;
+
+    const scanned = safeScan(text);
+    if (!scanned.ok) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      showCannotInspect({
+        what: 'This message was held, not checked.',
+        detail: `The scanner failed on it: ${String(scanned.err?.message || scanned.err).slice(0, 160)}`,
+        onProceed: () => { approve(key); resend(); },
+      });
+      return;
+    }
+
+    const result = scanned.result;
+    if (result.verdict === 'clean') { markClean(result); return; }
     // In warn mode only things that can actually be abused stop the send.
     if (policy.mode === 'warn' && result.verdict !== 'block') return;
 
     e.preventDefault();
     e.stopImmediatePropagation();
-    const text = readComposer(target);
 
     showPanel({
       result,
       title: headline(result, 'about to be sent'),
       coverage: scanCoverage(result, 'This message'),
+      destination: location.hostname,
+      sendText: text,
       onRedact: () => writeComposer(target, redact(text, result.findings).text),
-      onProceed: () => {
-        bypassUntil = Date.now() + 2000;
-        target.focus();
-        target.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true,
-        }));
-      },
+      onPseudonymise: () => writeComposer(target, pseudonymise(text, result.findings).text),
+      onProceed: () => { approve(key); resend(); },
     });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (!isSubmitKey(e) || policy.mode === 'off') return;
+    const target = eventTarget(e);
+    if (!isEditable(target)) return;
+    guardSubmission(e, target, () => {
+      target.focus();
+      target.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true,
+      }));
+    }, 'enter');
+  }, true);
+
+  /** The composer this send control belongs to, if any. */
+  function composerFor(control) {
+    const roots = [];
+    const form = control.closest('form');
+    if (form) roots.push(form);
+    if (control.parentElement?.parentElement) roots.push(control.parentElement.parentElement);
+    const host = control.getRootNode?.();
+    if (host && host !== document) roots.push(host);
+    roots.push(document);
+    for (const root of roots) {
+      let candidates;
+      try { candidates = root.querySelectorAll(EDITABLE); } catch { continue; }
+      for (const el of candidates) {
+        try {
+          if (isEditable(el) && readComposer(el).trim()) return el;
+        } catch { /* detached */ }
+      }
+    }
+    return null;
+  }
+
+  document.addEventListener('click', (e) => {
+    // Deliberately not gated on e.isTrusted. A page — or an agent driving it —
+    // calling .click() on the send button is a real way for content to leave,
+    // and measured: a synthetic submit went straight through. The one-shot,
+    // content-bound approval is what stops our own replay from looping, which
+    // is a tighter guarantee than trusting the event's provenance.
+    if (policy.mode === 'off') return;
+    const hit = eventTarget(e);
+    if (!hit || !hit.closest) return;
+    // Never act on our own surface.
+    if (hit.closest('.chhanni-panel, .chhanni-notice')) return;
+    let control;
+    try { control = hit.closest(SEND_SELECTOR); } catch { return; }
+    if (!control || !isSendControl(control)) return;
+    const target = composerFor(control);
+    if (!target) return;
+    guardSubmission(e, target, () => { try { control.click(); } catch { /* detached */ } }, 'click');
+  }, true);
+
+  document.addEventListener('submit', (e) => {
+    if (policy.mode === 'off') return;
+    const form = eventTarget(e)?.closest?.('form') || e.target;
+    if (!form || form.tagName !== 'FORM') return;
+    const target = composerFor(form);
+    if (!target) return;
+    guardSubmission(e, target, () => {
+      try { if (typeof form.requestSubmit === 'function') form.requestSubmit(); else form.submit(); }
+      catch { /* detached */ }
+    }, 'submit');
   }, true);
 })();

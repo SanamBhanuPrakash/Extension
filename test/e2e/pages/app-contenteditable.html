@@ -1,0 +1,29 @@
+<!doctype html><meta charset="utf-8"><title>mock chat — contenteditable</title>
+<style>
+ body{font:14px system-ui;margin:0;height:160vh}
+ .app{position:fixed;bottom:0;left:0;right:0;padding:16px;background:#fff;border-top:1px solid #ddd}
+ form{display:flex;gap:8px;max-width:760px;margin:0 auto}
+ #ce{flex:1;min-height:56px;border:1px solid #bbb;padding:8px}
+</style>
+<div style="padding:16px">Assistant: how can I help?</div>
+<div class="app"><form class="composer" id="f">
+  <div id="ce" class="ProseMirror" contenteditable="true" role="textbox" aria-label="Message the model"></div>
+  <button type="button" id="send" aria-label="Send message">Send</button>
+</form></div>
+<script>
+  // Serialises like a product that sends Markdown: link URLs travel.
+  window.__sent = [];
+  const ce = document.getElementById('ce');
+  const serialise = () => {
+    let out = '';
+    for (const node of ce.querySelectorAll('*')) {
+      if (node.tagName === 'A') out += ' ' + node.getAttribute('href');
+      if (node.tagName === 'IMG') out += ' ' + (node.getAttribute('alt') || '');
+    }
+    return ce.innerText + out;
+  };
+  document.getElementById('send').addEventListener('click', () => window.__sent.push({ how: 'click', text: serialise() }));
+  ce.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.__sent.push({ how: 'enter', text: serialise() }); }
+  });
+</script>

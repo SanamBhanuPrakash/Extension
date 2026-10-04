@@ -1,0 +1,36 @@
+<!doctype html><meta charset="utf-8"><title>mock chat — textarea</title>
+<style>
+ body{font:14px system-ui;margin:0;height:160vh}
+ .app{position:fixed;bottom:0;left:0;right:0;padding:16px;background:#fff;border-top:1px solid #ddd}
+ form{display:flex;gap:8px;align-items:flex-end;max-width:760px;margin:0 auto}
+ #prompt-textarea{flex:1;min-height:56px;font:inherit;padding:8px}
+</style>
+<div style="padding:16px">Assistant: how can I help?</div>
+<div class="app">
+  <form class="composer" id="f">
+    <textarea id="prompt-textarea" placeholder="Send a message to the model"></textarea>
+    <input type="file" id="picker" multiple>
+    <button type="button" id="send" aria-label="Send message">Send</button>
+    <button type="button" id="attach" aria-label="Attach a file">+</button>
+  </form>
+</div>
+<script>
+  // Records what this "provider" would actually transmit.
+  window.__sent = []; window.__files = [];
+  const ta = document.getElementById('prompt-textarea');
+  const send = (how) => window.__sent.push({ how, text: ta.value });
+  document.getElementById('send').addEventListener('click', () => send('click'));
+  document.getElementById('f').addEventListener('submit', (e) => { e.preventDefault(); send('form'); });
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send('enter'); }
+  });
+  const take = (list, how) => { for (const f of list) window.__files.push({ name: f.name, size: f.size, type: f.type, how }); };
+  document.getElementById('picker').addEventListener('change', (e) => take(e.target.files, 'picker'));
+  // A real composer accepts a dropped file and a pasted image.
+  document.addEventListener('drop', (e) => { if (e.dataTransfer?.files?.length) take(e.dataTransfer.files, 'drop'); });
+  document.addEventListener('paste', (e) => {
+    for (const item of (e.clipboardData?.items || [])) {
+      if (item.kind === 'file') { const f = item.getAsFile(); if (f) take([f], 'paste'); }
+    }
+  });
+</script>

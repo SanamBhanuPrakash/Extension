@@ -315,3 +315,80 @@
   .chhanni-notice-x:hover { color: #eef1f6; background: rgba(255,255,255,.07); }
 }
 @media (prefers-reduced-motion: reduce) { .chhanni-notice { transition: none; opacity: 1; transform: none; } }
+
+/* ── the alias action ───────────────────────────────────────────────────── */
+.chhanni-panel .chhanni-second {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  font: 500 12.5px/1 'Inter var', ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  letter-spacing: -0.005em; padding: 10px 13px; border-radius: 10px;
+  color: var(--c-text); border: 0.5px solid var(--c-hairline); background: var(--c-inset);
+  white-space: nowrap;
+}
+.chhanni-panel .chhanni-second:hover { background: var(--c-sunken); }
+.chhanni-panel .chhanni-second:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+
+/* ── what the model will receive ────────────────────────────────────────── */
+.chhanni-panel .chhanni-receive { padding: 0 18px 12px; }
+.chhanni-panel .chhanni-receive h3 {
+  margin: 0 0 5px; font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--c-faint);
+}
+.chhanni-panel .chhanni-receive ul { margin: 0; padding: 0; list-style: none; }
+.chhanni-panel .chhanni-receive li {
+  font-size: 12px; line-height: 1.55; color: var(--c-muted); padding-left: 13px; position: relative;
+}
+.chhanni-panel .chhanni-receive li::before {
+  content: ''; position: absolute; left: 3px; top: 8px;
+  width: 3px; height: 3px; border-radius: 50%; background: var(--c-faint);
+}
+.chhanni-panel .chhanni-receive .chhanni-receive-gap { color: var(--c-high); }
+.chhanni-panel .chhanni-receive .chhanni-receive-gap::before { background: var(--c-high); }
+
+/* ── the clean state ────────────────────────────────────────────────────── */
+/*
+ * Deliberately a different object from the warning panel: smaller, quieter,
+ * no actions, gone in under two seconds. It answers one question — "did that
+ * get checked?" — and a surface that answers it louder than that would be
+ * noise on every paste.
+ */
+.chhanni-clean {
+  position: fixed; right: 20px; bottom: 20px; z-index: 2147483646;
+  display: flex; align-items: center; gap: 8px;
+  box-sizing: border-box; padding: 8px 14px 8px 11px;
+  font: 450 12.5px/1.4 'Inter var', ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #11151c;
+  background: rgba(252, 253, 255, .80);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 0.5px solid rgba(9, 14, 22, .10);
+  border-radius: 999px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 6px 18px -8px rgba(9,14,22,.22);
+  opacity: 0; transform: translateY(8px);
+  transition: opacity .2s cubic-bezier(.32,.72,0,1), transform .3s cubic-bezier(.32,.72,0,1);
+  pointer-events: none;
+}
+.chhanni-clean.chhanni-in { opacity: 1; transform: none; }
+.chhanni-clean-tick { color: #1a7f4b; font-size: 12px; line-height: 1; }
+.chhanni-clean-partial .chhanni-clean-tick { color: #b8690f; }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .chhanni-clean { background: #fcfdff; }
+}
+@media (prefers-color-scheme: dark) {
+  .chhanni-clean {
+    color: #eef1f6; background: rgba(26, 30, 38, .82);
+    border-color: rgba(255,255,255,.10);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.1), 0 8px 22px -8px rgba(0,0,0,.5);
+  }
+  .chhanni-clean-tick { color: #5ed69b; }
+  .chhanni-clean-partial .chhanni-clean-tick { color: #f0b054; }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .chhanni-clean { background: #1a1e26; }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chhanni-clean { transition: none; }
+}
+@media (forced-colors: active) {
+  .chhanni-clean { border: 1px solid CanvasText; background: Canvas; color: CanvasText; forced-color-adjust: none; }
+  .chhanni-panel .chhanni-second { border: 1px solid ButtonText; }
+}

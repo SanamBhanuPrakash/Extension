@@ -17,32 +17,74 @@ function tokenName(ruleId, n) {
   return `<${ruleId.toUpperCase()}_${n}>`;
 }
 
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+/** 1 -> A, 26 -> Z, 27 -> AA. Readable at the sizes that occur in a prompt. */
+function letter(n) {
+  let out = '';
+  let v = n;
+  while (v > 0) { out = LETTERS[(v - 1) % 26] + out; v = Math.floor((v - 1) / 26); }
+  return out || 'A';
+}
+
 /**
- * @returns {{ text: string, map: Array<{token: string, ruleId: string, preview: string}>, changed: number }}
- *   `map` deliberately carries the masked preview, not the secret. The
- *   reversal table is returned separately by `redactReversible`.
+ * Pseudonyms, for the values whose *shape* is the thing the model needs.
+ *
+ * `<EMAIL_1>` is safe and it is also a hole in the middle of a sentence. Asked
+ * to draft a reply to a customer, a model given "<PERSON_NAME_1> wrote to
+ * <EMAIL_1> about <ORG_1>" has lost the thread; given "Person_A wrote to
+ * person_b@example.invalid" it has not. The person is still gone. What
+ * survives is that there were two of them, which is the part the task needed.
+ *
+ * Only identity-shaped values get a pseudonym. Credentials, cards, Aadhaar,
+ * PAN, SSN and the rest keep the plain placeholder, deliberately: a
+ * convincing fake card number in a prompt is still a card-shaped string, and
+ * a tool that invents plausible credentials is a tool that will one day be
+ * blamed for one. The rule is that a pseudonym may be realistic about
+ * *structure* and must be obviously false about *substance* —
+ * `example.invalid` is reserved by RFC 2606 and can never resolve.
  */
-export function redact(text, findings) {
+const PSEUDONYM = {
+  person_name: (n) => `Person_${letter(n)}`,
+  postal_address: (n) => `${n * 7 + 10} Example Street, Placeholder City`,
+  email: (n) => `person_${letter(n).toLowerCase()}@example.invalid`,
+  // +91 9000000001 is inside the Indian mobile range by shape and is not an
+  // allocated series; it keeps a phone-shaped string phone-shaped.
+  phone_india: (n) => `+91 90000 ${String(n).padStart(5, '0')}`,
+};
+
+function pseudonymName(ruleId, n) {
+  const make = PSEUDONYM[ruleId];
+  return make ? make(n) : tokenName(ruleId, n);
+}
+
+/**
+ * The shared machinery. `name(ruleId, ordinal)` is the only difference between
+ * redaction and pseudonymisation, which is the point: one replacement path,
+ * so the two cannot drift into disagreeing about overlaps or ordering.
+ */
+function replaceAll(text, findings, name) {
   // Advisory findings are context, not secrets. Replacing the word
   // "CONFIDENTIAL" with a placeholder helps nobody, and removing the figure
   // from "ARR is £4.2M" would destroy the question being asked.
   const list = (findings ?? scan(text).findings).filter((f) => !f.advisory);
-  if (list.length === 0) return { text, map: [], changed: 0 };
+  if (list.length === 0) return { text, map: [], table: new Map(), changed: 0 };
 
-  const assigned = new Map(); // secret value -> token
-  const perRule = new Map(); // ruleId -> next ordinal
+  const assigned = new Map(); // original value -> replacement
+  const perRule = new Map();  // ruleId -> next ordinal
   const map = [];
+  const table = new Map();
 
-  // Ordinals are assigned in READING order, so <PERSON_NAME_1> is the first
-  // name in the document. Splicing still runs right to left, so earlier
-  // offsets stay valid — the two orders are deliberately different.
+  // Ordinals are assigned in READING order, so Person_A is the first name in
+  // the document. Splicing still runs left to right over disjoint spans; the
+  // two orders agree here and that is checked by test.
   for (const f of [...list].sort((a, b) => a.start - b.start)) {
     if (assigned.has(f.match)) continue;
     const n = (perRule.get(f.ruleId) || 0) + 1;
     perRule.set(f.ruleId, n);
-    const token = tokenName(f.ruleId, n);
+    const token = name(f.ruleId, n);
     assigned.set(f.match, token);
     map.push({ token, ruleId: f.ruleId, label: f.label, preview: f.preview });
+    table.set(token, f.match);
   }
 
   // One pass, one join.
@@ -54,9 +96,9 @@ export function redact(text, findings) {
   // joining once is linear: the same output in 40 ms.
   //
   // resolveOverlaps() already guarantees the findings it produces are
-  // disjoint, but redact() is public and can be handed any list, so a span
-  // that starts inside the previous one is skipped rather than allowed to
-  // corrupt the output. First wins, in reading order.
+  // disjoint, but these are public entry points and can be handed any list, so
+  // a span that starts inside the previous one is skipped rather than allowed
+  // to corrupt the output. First wins, in reading order.
   const pieces = [];
   let at = 0;
   let changed = 0;
@@ -67,7 +109,28 @@ export function redact(text, findings) {
     changed++;
   }
   pieces.push(text.slice(at));
-  return { text: pieces.join(''), map, changed };
+  return { text: pieces.join(''), map, table, changed };
+}
+
+/**
+ * @returns {{ text: string, map: Array<{token, ruleId, label, preview}>, changed: number }}
+ *   `map` deliberately carries the masked preview, not the secret. The
+ *   reversal table is returned separately by `redactReversible`.
+ */
+export function redact(text, findings) {
+  const { text: out, map, changed } = replaceAll(text, findings, tokenName);
+  return { text: out, map, changed };
+}
+
+/**
+ * Same replacement, with identity-shaped values swapped for stable pseudonyms
+ * instead of placeholders. Deterministic within one document and reversible in
+ * memory through the returned table; nothing is stored and nothing leaves.
+ *
+ * @returns {{ text, map, table: Map<string,string>, changed: number }}
+ */
+export function pseudonymise(text, findings) {
+  return replaceAll(text, findings, pseudonymName);
 }
 
 /**
@@ -76,21 +139,7 @@ export function redact(text, findings) {
  * nowhere else.
  */
 export function redactReversible(text, findings) {
-  const list = (findings ?? scan(text).findings).filter((f) => !f.advisory);
-  const result = redact(text, list);
-  const table = new Map();
-  const assigned = new Map();
-  const perRule = new Map();
-  // Same reading order as redact(), so the tokens agree.
-  for (const f of [...list].sort((a, b) => a.start - b.start)) {
-    if (assigned.has(f.match)) continue;
-    const n = (perRule.get(f.ruleId) || 0) + 1;
-    perRule.set(f.ruleId, n);
-    const token = tokenName(f.ruleId, n);
-    assigned.set(f.match, token);
-    table.set(token, f.match);
-  }
-  return { ...result, table };
+  return replaceAll(text, findings, tokenName);
 }
 
 /** Puts real values back where placeholders appear. */

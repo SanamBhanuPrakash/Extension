@@ -92,6 +92,18 @@ const columnIndex = (ref) => {
   return n - 1;
 };
 
+/**
+ * How many rows the sheet actually has, without materialising any of them.
+ * Cheap on purpose: this runs on every spreadsheet, including the ones whose
+ * whole point is that they are too big to read.
+ */
+function countRows(sheetXml) {
+  let n = 0;
+  const re = /<(?:\w+:)?row\b/g;
+  while (re.exec(sheetXml) !== null) n++;
+  return n;
+}
+
 function extractSheet(sheetXml, sharedStrings, maxRows) {
   const lines = [];
   for (const row of chunksBetween(sheetXml, 'row')) {
@@ -302,20 +314,41 @@ export async function extractOfficeDocument(bytes, filename = '') {
     // where a `{remaining}` object was expected made every spreadsheet read as
     // `opaque`: assigning a property to a number primitive throws in a module,
     // and the throw was swallowed as "could not be parsed".
+    //
+    // The cap also used to be silent, and that was the worse bug of the two.
+    // A 50,000-row customer export came back `readable`, the table layer —
+    // which only ever saw the 5,000 rows handed to it — reported "5,000
+    // records", `unprocessedRows: 0` and `fullyRedactable: true`, and the
+    // panel passed that on with nothing to suggest the other 45,000 existed.
+    // Worse, "attach a redacted copy" then wrote a file containing a tenth of
+    // the spreadsheet. Everything downstream is built to report what was not
+    // inspected; it cannot do that about a truncation it was never told about,
+    // so the count travels with the text.
     let rowsLeft = MAX_SPREADSHEET_ROWS;
+    let rowsRead = 0;
+    let rowsTotal = 0;
     const got = await readParts(bytes, entries, 'spreadsheet', budget, {
       '^xl/worksheets/sheet\\d+\\.xml$': (xml) => {
+        rowsTotal += countRows(xml);
         if (rowsLeft <= 0) return [];
         const lines = extractSheet(xml, sharedStrings, rowsLeft);
         rowsLeft -= lines.length;
+        rowsRead += lines.length;
         return lines;
       },
       // Already consumed above; reading it again would duplicate every string.
       '^xl/sharedStrings\\.xml$': () => [],
     });
+    const unreadRows = Math.max(0, rowsTotal - rowsRead);
+    if (unreadRows > 0) {
+      // Goes into `skipped`, which is what makes documents.js call the whole
+      // file `partial` rather than `readable` and name the gap in the panel.
+      got.skipped.push(`${unreadRows.toLocaleString()} further rows (Chhanni reads ${MAX_SPREADSHEET_ROWS.toLocaleString()} per spreadsheet)`);
+    }
     return {
       kind: 'spreadsheet', text: got.blocks.join('\n\n'), metadata,
       parts: sheets.length, coverage: got,
+      rows: { read: rowsRead, total: rowsTotal, truncated: unreadRows > 0 },
     };
   }
 

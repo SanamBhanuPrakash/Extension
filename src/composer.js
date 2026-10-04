@@ -26,6 +26,13 @@ const KNOWN = [
 ];
 
 const SEND_HINT = /\b(send|submit|ask|generate|run|prompt)\b/i;
+/**
+ * Controls that sit in the same corner and must never be held: the stop
+ * button during streaming, the attach/upload control, voice input, and the
+ * clear/new-chat controls. Checked first, because several of them carry a
+ * label that also matches SEND_HINT ("stop generating").
+ */
+const NOT_SEND = /\b(stop|cancel|abort|attach|upload|file|image|photo|camera|voice|mic|microphone|dictate|clear|new chat|delete|remove|close|settings|model|regenerate|copy|edit|share)\b/i;
 
 function isVisible(el) {
   if (!el.isConnected) return false;
@@ -35,16 +42,45 @@ function isVisible(el) {
   return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) > 0.1;
 }
 
+export const SEND_SELECTOR = 'button, [role="button"], input[type="submit"], input[type="image"]';
+
+/**
+ * Does this specific control look like the one that sends the message?
+ *
+ * Needed because the extension has to intercept a *click*, not only Enter, and
+ * a click handler that cancels the wrong button breaks the host application.
+ * A composer sits next to a send control, an attach control, a model picker
+ * and a stop button; only the first of those may be held.
+ *
+ * Deliberately conservative. When this is wrong in the negative direction the
+ * result is today's behaviour; when it is wrong in the positive direction the
+ * result is a page that does not work.
+ */
+export function isSendControl(el) {
+  if (!el) return false;
+  if (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'image')) return true;
+  if (el.getAttribute && el.getAttribute('type') === 'submit') return true;
+  const label = `${el.getAttribute?.('aria-label') || ''} ${el.getAttribute?.('title') || ''} `
+    + `${el.getAttribute?.('data-testid') || ''} ${el.textContent || ''}`;
+  if (NOT_SEND.test(label)) return false;
+  if (SEND_HINT.test(label)) return true;
+  // Icon-only controls are the common case on these products. Accept a small
+  // one that carries no text at all, which is what a paper-plane button is.
+  try {
+    if (!(el.textContent || '').trim()) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.width <= 64 && rect.height <= 64) return true;
+    }
+  } catch { /* not laid out */ }
+  return false;
+}
+
 /** Is there something that looks like a send button near this element? */
 function hasSendControl(el) {
   const scope = el.closest('form') || el.parentElement?.parentElement || el.parentElement;
   if (!scope) return false;
-  for (const candidate of scope.querySelectorAll('button, [role="button"], input[type="submit"]')) {
-    const label = `${candidate.getAttribute('aria-label') || ''} ${candidate.getAttribute('title') || ''} ${candidate.getAttribute('data-testid') || ''} ${candidate.textContent || ''}`;
-    if (SEND_HINT.test(label)) return true;
-    // An icon-only button with no text is the common case; accept a small
-    // square control sitting inside the composer's own container.
-    if (!candidate.textContent.trim() && candidate.getBoundingClientRect().width <= 64) return true;
+  for (const candidate of scope.querySelectorAll(SEND_SELECTOR)) {
+    if (isSendControl(candidate)) return true;
   }
   return false;
 }
