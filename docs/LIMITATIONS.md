@@ -673,6 +673,54 @@ has to stay usable.
 
 ---
 
+## 15c2. Proving it works, on the page in front of you
+
+The most dangerous belief a person can hold about this extension is *it is
+installed, therefore I am protected*. Everything else in this document is
+about the gap between what Chhanni claims and what it does; this section is
+about the one claim nobody could previously check.
+
+The popup can say which sites are on the list. That is a fact about
+configuration. It cannot answer the question somebody actually has — **does
+this work on this page, right now, in this browser, with my settings** — and
+neither could anything else. The panel appearing is not proof; it appears on a
+page whose send guard is broken too. A green CI badge is a claim about a
+machine that is not yours.
+
+So the popup offers a test, on a watched tab, and it takes about ten seconds:
+a card appears with a line to copy, you paste it into the message box, and the
+card says what happened. Three separate things are being proved and they are
+deliberately not conflated:
+
+| | what it proves |
+|---|---|
+| the card appears at all | the content script is injected on this page |
+| the status says "waiting", not "still starting" | the engine finished loading |
+| "Chhanni stopped it" | the paste path intercepted a known credential |
+
+**The value is `AKIAIOSFODNN7EXAMPLE`, which AWS publishes in its own
+documentation.** That is what makes this honest rather than reckless: if every
+guard in this extension failed at once, what would reach the provider is a
+string from a public manual.
+
+**A failing self-test is the most useful thing it can produce**, so it says so.
+The first version of the card asked the guard what had happened, and a browser
+test found the hole immediately: in `off` mode the paste handler returns before
+any hook runs, so the credential went into the composer and the card sat on
+"waiting for the paste" forever. A test that cannot tell *nothing is protecting
+this page* from *you have not pasted yet* is worse than no test, because the
+person reads the second and the truth is the first. The card watches the
+composer now, rather than trusting a callback, and reports exactly that.
+
+**What it does not prove.** It exercises the paste path, not the click, the
+Enter key, the form submit, or a file attachment — each of those is covered by
+the browser suite but not by this card. And it proves nothing about the
+*provider*: that a mock recorded nothing, and that your real provider received
+nothing, are different claims. `docs/TESTING.md` § 2 is how you check the
+second one by hand.
+
+---
+
 ## 15d. What it costs to be on the page, and what the page costs by itself
 
 An extension that is correct and slow gets uninstalled, and the uninstall

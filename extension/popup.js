@@ -133,8 +133,10 @@ const SWEEP_REASON = {
 
 async function renderPageState(tab, watching) {
   const line = $('pageState');
+  const test = $('selfTest');
   line.hidden = true;
   line.textContent = '';
+  test.hidden = true;
   if (!tab?.id || !watching) return;
 
   let state = null;
@@ -142,6 +144,24 @@ async function renderPageState(tab, watching) {
     state = await chrome.tabs.sendMessage(tab.id, { type: 'chhanni:page-state' });
   } catch { return; }          // no content script in this tab
   if (!state) return;
+
+  /**
+   * The offer to prove it, which is only offered where it can be kept.
+   *
+   * This button appears exactly when a content script answered from this tab,
+   * because that is the only case where the test can run. Offering it on a
+   * page Chhanni is not in would be inviting somebody to run a test that
+   * cannot produce an answer, which is worse than not offering one.
+   */
+  test.hidden = false;
+  test.onclick = async () => {
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: 'chhanni:self-test' });
+      window.close();           // the card is on the page; the popup is in the way
+    } catch {
+      test.textContent = 'Could not reach this page';
+    }
+  };
 
   if (state.engine === 'failed') {
     line.textContent = 'Chhanni\u2019s engine failed to load on this page. Nothing here is being checked.';

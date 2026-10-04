@@ -840,3 +840,47 @@ person Chhanni protects is not the person it would be fighting.
 zlib stream inline in a prompt is not decompressed (files are different — a
 `.docx` is a ZIP and is extracted), and an encrypted value is not readable at
 all.
+
+---
+
+### 37. A self-test, because "installed" is not "working"
+
+**Context.** Every other section of LIMITATIONS is about the gap between what
+Chhanni claims and what it does. This is about the one claim nobody could
+check. The popup says which sites are on the match list — a fact about
+configuration — and nothing answered the question a person actually has:
+*does this work on this page, right now, in this browser, with my settings?*
+
+Nothing else answers it either. The panel appearing is not proof; it appears
+on a page whose send guard is broken too. A green CI badge is a claim about a
+machine that is not theirs.
+
+**Decision.** A button in the popup, on a watched tab, raises a card on the
+page with a line to paste. The person pastes it into their own composer,
+through the real paste path, and the card says what happened.
+
+The value is `AKIAIOSFODNN7EXAMPLE`, which AWS publishes in its own
+documentation. That single choice is what makes this honest rather than
+reckless: if every guard in the extension failed at once, what reaches the
+provider is a string from a public manual. A test that risked a real
+credential to prove a tool protects credentials would be absurd.
+
+**What a browser test found, which changed the design.** The first version
+asked the *guard* what had happened, via a hook in the paste path. In `off`
+mode the paste handler returns before any hook runs — so the credential went
+into the composer and the card sat on "waiting for the paste" forever. A
+self-test that cannot tell *nothing is protecting this page* from *you have
+not pasted yet* is worse than no self-test, because the person reads the
+second one and the truth is the first. The card watches the composer now.
+
+A second browser test found the card sitting on top of the message box it was
+asking the person to paste into — bottom-left is where every product on the
+match list puts its composer. It is top-left, which also keeps it clear of the
+panel at bottom-right so both can be read at once. Neither of those was
+visible from reading the stylesheet.
+
+**Scope, so the card does not overclaim.** It exercises the paste path, not
+the click, the Enter key, the form submit or a file attachment. And it proves
+nothing about the provider: *a mock recorded nothing* and *your real provider
+received nothing* are different claims, and TESTING.md § 2 is how to check the
+second by hand.

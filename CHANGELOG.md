@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### "Installed" was not "working", and nothing could tell you which
+
+The most dangerous belief a person can hold about this extension is *it is
+installed, therefore I am protected*. The popup could say which sites are on
+the match list — a fact about configuration — and nothing answered the
+question somebody actually has: **does this work on this page, right now, in
+this browser, with my settings?** The panel appearing is not proof; it appears
+on a page whose send guard is broken too.
+
+There is a test now. A button in the popup raises a card on the page with a
+line to copy; you paste it into your own message box, through the real paste
+path, and the card says what happened. Three things get proved separately: the
+card appearing means the content script is injected here, the status means the
+engine finished loading, and "Chhanni stopped it" means the paste path
+intercepted a known credential.
+
+The value is `AKIAIOSFODNN7EXAMPLE`, which AWS publishes in its own
+documentation. If every guard in this extension failed at once, what reaches
+the provider is a string from a public manual.
+
+Two browser tests changed the design, and neither was visible from reading the
+code. The first version asked the *guard* what happened — and in `off` mode
+the paste handler returns before any hook runs, so the credential went into
+the composer and the card sat on "waiting for the paste" forever. A test that
+cannot tell *nothing is protecting this page* from *you have not pasted yet*
+is worse than no test. It watches the composer now. The second found the card
+sitting on top of the message box it was asking you to paste into, because
+bottom-left is where every product on the list puts its composer; it is
+top-left, clear of the panel at bottom-right so both can be read at once.
+
+Also: the page-state message the popup uses now checks that the sender is this
+extension. The manifest has no `externally_connectable`, so nothing can reach
+it today — but a reply naming what Chhanni could not read is a small map of
+where to hide something, and the day somebody adds that key for an unrelated
+reason, nothing else in the file would warn them.
+
+
 ### A Kubernetes Secret is Base64, and Chhanni could not read one
 
 Measured on `AWS_ACCESS_KEY_ID=AKIA…`: **nine of fourteen encodings of the

@@ -969,6 +969,176 @@
     cleanTimer = setTimeout(() => { cleanPill?.remove(); cleanPill = null; }, gaps.length ? 4200 : 1900);
   }
 
+  // ──────────────────────────────────────────────── proving it works, here
+  //
+  // The most dangerous belief a person can hold about this extension is "it is
+  // installed, therefore I am protected". The popup can say which sites are on
+  // the list, and that is a fact about configuration. It cannot answer the
+  // question somebody actually has, which is *does it work on this page, right
+  // now, in this browser, with my settings*.
+  //
+  // Nothing else answers it either. The panel appearing is not proof — it
+  // appears on a page where the send guard is broken too. A green CI badge is
+  // not proof; it is a claim about a machine that is not this one.
+  //
+  // So: a test anybody can run in ten seconds, on the real page, through the
+  // real paste path, with a credential that is safe to lose. The value is
+  // `AKIAIOSFODNN7EXAMPLE` — AWS publishes it in their own documentation —
+  // which is what makes this honest rather than reckless. If every guard in
+  // this extension fails at once, what reaches the provider is a string from a
+  // public manual.
+  //
+  // What it proves, and the three are deliberately separate:
+  //
+  //   the card appears      the content script is injected on this page
+  //   the status says ready the engine finished loading
+  //   "stopped it"          the paste path intercepted a known credential
+  //
+  // A failing self-test is the most useful thing this feature can produce, so
+  // it says so plainly rather than timing out into silence.
+  const TEST_VALUE = ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join('');
+  const TEST_LINE = `AWS_ACCESS_KEY_ID=${TEST_VALUE}`;
+  let selfTest = null;
+
+  /**
+   * Did the test value land somewhere a person types?
+   *
+   * This exists because the first version of the card asked the *guard* what
+   * happened, and a browser test found the hole: in `off` mode the paste
+   * handler returns before any hook runs, so the credential went into the
+   * composer and the card sat on "waiting for the paste" forever. A self-test
+   * that cannot tell "nothing is protecting this page" from "you have not
+   * pasted yet" is worse than no self-test, because the person reads the
+   * second one and the truth is the first.
+   *
+   * Editable elements only, never the page's text, so the card's own copy of
+   * the line cannot be mistaken for a leak. Bounded the way every other
+   * traversal in this file is.
+   */
+  function testValueInComposer() {
+    const look = (root, depth) => {
+      try {
+        for (const node of root.querySelectorAll(EDITABLE)) {
+          if (node.closest && node.closest('.chhanni-selftest')) continue;
+          const v = node.tagName === 'TEXTAREA' ? node.value : node.innerText;
+          if (v && v.includes(TEST_VALUE)) return true;
+        }
+        if (depth > 3) return false;
+        let seen = 0;
+        for (const node of root.querySelectorAll('*')) {
+          const sub = node.shadowRoot;
+          if (!sub) continue;
+          if (++seen > 100) return false;
+          if (look(sub, depth + 1)) return true;
+        }
+      } catch { /* detached or cross-origin */ }
+      return false;
+    };
+    return look(document, 0);
+  }
+
+  /** Called from the paste path when the guard stopped the test value. */
+  function noteSelfTest(text, outcome) {
+    if (!selfTest || !text || !text.includes(TEST_VALUE)) return;
+    if (outcome !== 'stopped') return;      // the composer watch reports the rest
+    clearTimeout(selfTest.timer);
+    clearInterval(selfTest.watch);
+    selfTest.setStatus('ok', 'Chhanni stopped it. The paste path on this page is working — '
+      + 'the key never reached the message box. Close the panel behind this to discard it.');
+  }
+
+  function closeSelfTest() {
+    clearTimeout(selfTest?.timer);
+    clearInterval(selfTest?.watch);
+    selfTest?.box.remove();
+    selfTest = null;
+  }
+
+  function showSelfTest() {
+    closeSelfTest();
+    const box = el('div', 'chhanni-selftest');
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', 'Test Chhanni');
+
+    const head = el('div', 'chhanni-selftest-head');
+    head.appendChild(el('b', null, 'Does Chhanni work on this page?'));
+    const close = el('button', 'chhanni-notice-x', '×');
+    close.setAttribute('aria-label', 'Close');
+    close.onclick = closeSelfTest;
+    head.appendChild(close);
+    box.appendChild(head);
+
+    box.appendChild(el('p', null, 'This is a key from Amazon’s own documentation, not a real one. '
+      + 'Nothing here is sent anywhere.'));
+
+    const row = el('div', 'chhanni-selftest-row');
+    const code = el('code', 'chhanni-selftest-value', TEST_LINE);
+    row.appendChild(code);
+    const copy = el('button', 'chhanni-selftest-copy', 'Copy');
+    copy.onclick = async () => {
+      // A content script shares the page's clipboard permission, and this runs
+      // inside a click, so the async API is allowed. The fallback is a
+      // selection the person can copy themselves — never a silent failure,
+      // because the whole point of this card is that it does not pretend.
+      try {
+        await navigator.clipboard.writeText(TEST_LINE);
+        copy.textContent = 'Copied';
+      } catch {
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        copy.textContent = 'Press ⌘/Ctrl+C';
+      }
+      setTimeout(() => { copy.textContent = 'Copy'; }, 2500);
+    };
+    row.appendChild(copy);
+    box.appendChild(row);
+
+    box.appendChild(el('p', null, 'Now paste it into the message box.'));
+
+    const status = el('p', 'chhanni-selftest-status');
+    box.appendChild(status);
+    document.body.appendChild(box);
+
+    const setStatus = (kind, text) => {
+      status.className = `chhanni-selftest-status chhanni-selftest-${kind}`;
+      status.textContent = text;
+    };
+
+    selfTest = { box, setStatus, timer: null, watch: null };
+
+    // The composer watch, not a callback. In `off` mode the paste handler
+    // returns before any hook runs, so the only way to tell "nothing is
+    // protecting this page" from "you haven't pasted yet" is to look.
+    selfTest.watch = setInterval(() => {
+      if (!selfTest || !testValueInComposer()) return;
+      clearInterval(selfTest.watch);
+      clearTimeout(selfTest.timer);
+      selfTest.setStatus('bad', 'Chhanni did NOT stop it \u2014 a known credential is sitting in the '
+        + 'message box unchallenged. Nothing is protecting this page. Check that Chhanni is not '
+        + 'switched off, then reload the page.');
+    }, 250);
+
+    if (engineState === 'failed') {
+      setStatus('bad', 'Chhanni’s engine did not load on this page, so nothing is being checked. '
+        + 'Reload the extension.');
+      return;
+    }
+    if (engineState === 'loading') {
+      setStatus('wait', 'Chhanni is still starting. Give it a moment, then paste.');
+    } else {
+      setStatus('wait', 'Waiting for the paste…');
+    }
+    selfTest.timer = setTimeout(() => {
+      // Not a failure. Saying "nothing is protecting this page" because
+      // nobody pasted anything would be the same overclaim in the other
+      // direction.
+      setStatus('wait', 'Nothing pasted yet. Copy the line above and paste it into the message box.');
+    }, 45000);
+  }
+
   const seenResponses = new Set();
 
   /**
@@ -1409,7 +1579,25 @@
    */
   if (window === window.top) {
     try {
-      chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+      chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+        /**
+         * Only this extension may ask.
+         *
+         * The manifest has no `externally_connectable`, so a page cannot
+         * reach this listener and another extension cannot either — the
+         * check is not closing a hole that is open today. It is here because
+         * the day somebody adds `externally_connectable` for some unrelated
+         * reason, this listener would start answering questions about the
+         * page to whoever asked, and nothing else in the file would change
+         * to warn them. A reply that names what Chhanni could not read is a
+         * small map of where to hide something.
+         */
+        if (!sender || sender.id !== chrome.runtime.id) return undefined;
+        if (msg && msg.type === 'chhanni:self-test') {
+          try { showSelfTest(); reply({ shown: true, engine: engineState }); }
+          catch { reply({ shown: false }); }
+          return true;
+        }
         if (!msg || msg.type !== 'chhanni:page-state') return undefined;
         reply({
           engine: engineState,
@@ -1526,10 +1714,17 @@
     }
 
     const result = scanned.result;
-    if (result.verdict === 'clean') { markClean(result); return; }
+    if (result.verdict === 'clean') {
+      // A self-test paste that comes back clean is the failure the test is
+      // for, and it has to be reported before the reassuring pill appears.
+      noteSelfTest(text, 'clean');
+      markClean(result);
+      return;
+    }
 
     e.preventDefault();
     e.stopPropagation();
+    noteSelfTest(text, 'stopped');
 
     showPanel({
       result,

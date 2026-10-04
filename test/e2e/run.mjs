@@ -743,6 +743,40 @@ await test('a host page that hides the panel still cannot send', 'hostile.html',
 // that can never fire is the interface claiming coverage the engine does not
 // have.
 
+/**
+ * Raise the self-test card the way the popup does.
+ *
+ * Through `chrome.tabs.sendMessage` from an extension page, not by calling
+ * anything in the page: the message path is part of what is being tested, and
+ * the content script now refuses a message whose sender is not this
+ * extension, so a shortcut here would test a route no user has.
+ */
+async function raiseSelfTest(ctx, page) {
+  const admin = await ctx.newPage();
+  await admin.goto('chrome://extensions');
+  await admin.waitForTimeout(600);
+  const id = await admin.evaluate(() => document.querySelector('extensions-manager')?.shadowRoot
+    ?.querySelector('extensions-item-list')?.shadowRoot?.querySelector('extensions-item')?.id);
+  const opt = await ctx.newPage();
+  await opt.goto(`chrome-extension://${id}/options.html`);
+  await opt.waitForTimeout(300);
+  const url = page.url();
+  await opt.evaluate(async (u) => {
+    const [tab] = await chrome.tabs.query({ url: u });
+    await chrome.tabs.sendMessage(tab.id, { type: 'chhanni:self-test' });
+  }, url);
+  await opt.close();
+  await admin.close();
+  await page.bringToFront();
+  return page.waitForSelector('.chhanni-selftest', { timeout: 10000, state: 'attached' })
+    .then(() => true).catch(() => false);
+}
+
+const selfTestStatus = (p) => p.evaluate(() => {
+  const el = document.querySelector('.chhanni-selftest-status');
+  return el ? { text: el.innerText, kind: el.className.match(/chhanni-selftest-(ok|bad|wait)/)?.[1] } : null;
+});
+
 async function withMode(ctx, mode) {
   const admin = await ctx.newPage();
   await admin.goto('chrome://extensions'); await admin.waitForTimeout(700);
@@ -883,6 +917,35 @@ await test('a malformed stored policy does not let content through', 'app-textar
  * other e2e fixtures could not either, because they are static, and against a
  * static page the scanner is correct and idle for the same reason.
  */
+await test('the self-test says so when the guard works', 'app-textarea.html', async (p, t, ctx) => {
+  t.ok(await raiseSelfTest(ctx, p), 'the self-test card never appeared');
+  const before = await selfTestStatus(p);
+  t.equal(before.kind, 'wait', `the card claimed an answer before anything was pasted: ${before.text}`);
+
+  // The card hands over a line to paste; pasting it is what the person does.
+  const line = await p.evaluate(() => document.querySelector('.chhanni-selftest-value').innerText);
+  t.ok(line.includes(KEY), 'the card did not offer the documented key');
+  await paste(p, line);
+
+  const after = await selfTestStatus(p);
+  t.equal(after.kind, 'ok', `the card did not report the interception: ${after.text}`);
+});
+
+await test('the self-test says so when the guard does not work', 'app-textarea.html', async (p, t, ctx) => {
+  // The case the whole feature exists for. In `off` there is no paste handler
+  // at all, which is exactly what a broken install looks like from the
+  // outside — and a self-test that reported "working" here, or simply sat
+  // waiting, would be worse than no self-test.
+  await withMode(ctx, 'off');
+  await p.reload();
+  await p.waitForTimeout(READY_MS);
+  t.ok(await raiseSelfTest(ctx, p), 'the self-test card never appeared');
+  const line = await p.evaluate(() => document.querySelector('.chhanni-selftest-value').innerText);
+  await paste(p, line);
+  const after = await selfTestStatus(p);
+  t.equal(after.kind, 'bad', `a credential went through unchallenged and the card said: ${after.text}`);
+}, null);
+
 await test('a Kubernetes Secret does not reach the provider', 'app-textarea.html', async (p, t) => {
   // A Secret's data values are always Base64 — that is the format, not an
   // evasion — and before `src/encoded.js` existed this whole manifest scanned
