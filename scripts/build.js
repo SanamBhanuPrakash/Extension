@@ -100,5 +100,6 @@ console.log(`chhanni: ${modules} engine modules -> extension/engine/`);
 console.log(`chhanni: dist/chrome   ${kb(dirSize(chromeDir))}   (Chrome, Edge, Brave, Opera, Arc)`);
 console.log(`chhanni: dist/firefox  ${kb(dirSize(firefoxDir))}   (Firefox, Firefox for Android)`);
 console.log('\nPackage for upload:');
-console.log('  cd dist/chrome  && zip -r ../chhanni-chrome.zip  . -x ".*"');
-console.log('  cd dist/firefox && zip -r ../chhanni-firefox.zip . -x ".*"');
+console.log('  node scripts/package.js');
+console.log('\nNot `zip -r`: that embeds the clock, so the same commit produces');
+console.log('different bytes and nobody can check the upload against the repository.');

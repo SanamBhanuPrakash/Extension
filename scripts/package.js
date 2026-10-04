@@ -153,7 +153,13 @@ for (const target of TARGETS) {
     const was = createHash('sha256').update(readFileSync(out)).digest('hex');
     if (was !== digest) {
       console.error(red(`${target}: the package is not reproducible — ${was.slice(0, 16)} then, ${digest.slice(0, 16)} now`));
+      // Deliberately leave the existing file alone. A verification step that
+      // overwrites the artifact it has just found to differ destroys the
+      // baseline, so the *next* verification fails too and the real
+      // difference is one run behind where anyone looks for it.
       failed = true;
+      results.push({ target, out: relative(root, out), count, size: bytes.length, digest: `${digest}  (NOT WRITTEN)` });
+      continue;
     }
   }
   writeFileSync(out, bytes);
