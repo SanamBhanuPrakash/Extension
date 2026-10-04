@@ -205,7 +205,11 @@ const KEY = ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join('');
 // matches a live-key pattern blocks the push however fake the value is.
 const STRIPE = ['sk', 'live', '51H8xQ2eZvKYlo2C0abcdefghij'].join('_');
 const SECRET = `AWS_ACCESS_KEY_ID=${KEY}`;
-const READY_MS = 3500;          // comfortably past a cold start
+const READY_MS = 3500;          // only used where readiness cannot be observed
+const THROTTLE = (() => {
+  const i = process.argv.indexOf('--throttle');
+  return i !== -1 ? Number(process.argv[i + 1]) || 1 : 1;
+})();
 
 let passed = 0;
 const failures = [];
@@ -233,7 +237,7 @@ async function preflight() {
   try {
     const p = await ctx.newPage();
     await p.goto(`http://localhost:${PORT}/app-textarea.html`);
-    await p.waitForTimeout(READY_MS);
+    await waitReady(p, '#prompt-textarea');
 
     // Polled, not slept. A fixed wait here made the preflight itself flaky,
     // and a guard that fails at random is worse than no guard: it teaches
@@ -281,7 +285,61 @@ try {
   process.exit(1);
 }
 
-async function test(name, page, body) {
+/**
+ * Wait until the extension is demonstrably working on this page.
+ *
+ * Every wait here used to be `waitForTimeout(3500)`, chosen because the cold
+ * start measured about two seconds on the machine the suite was written on.
+ * That is not a test, it is a bet on the hardware. Measured with CDP CPU
+ * throttling, against the same build:
+ *
+ *   1x   live at 2,922 ms      578 ms of margin
+ *   4x   live at 3,514 ms      already past the wait
+ *   8x   live at 10,417 ms     hopeless
+ *
+ * A GitHub runner is a shared two-core VM, so the suite passed locally and
+ * failed there — twice, for two different reasons, both of them this one.
+ *
+ * The probe is product behaviour rather than a test-only hook: paste something
+ * harmless and wait for the "checked, nothing found" state, which only appears
+ * after a scan, which requires the engine. Nothing is added to the shipped
+ * extension to make this work, and nothing here is faster than the thing it is
+ * waiting for.
+ */
+async function waitReady(p, selector) {
+  if (!selector) { await p.waitForTimeout(READY_MS); return; }
+  const deadline = Date.now() + 45000;
+  while (Date.now() < deadline) {
+    try {
+      await p.evaluate(() => navigator.clipboard.writeText('chhanni readiness probe'));
+      await p.locator(selector).first().click({ timeout: 2000 });
+      await p.keyboard.press('ControlOrMeta+V');
+      const live = await p.waitForFunction(() => !!document.querySelector('.chhanni-clean'),
+        null, { timeout: 1500 }).then(() => true).catch(() => false);
+      // Clear through the editor's own event, and blur. `fill('')` on a
+      // contenteditable leaves a selection behind, and the next paste into it
+      // then behaves differently — which cost one test before this line existed.
+      await p.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return;
+        if (el.tagName === 'TEXTAREA') el.value = '';
+        else el.textContent = '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.blur();
+        window.getSelection()?.removeAllRanges();
+      }, selector).catch(() => {});
+      if (live) {
+        // Let the pill go, so a later assertion cannot read this one.
+        await p.waitForFunction(() => !document.querySelector('.chhanni-clean'),
+          null, { timeout: 6000 }).catch(() => {});
+        return;
+      }
+    } catch { /* the page is not up yet */ }
+  }
+  throw new Error('the extension never became demonstrably live on this page');
+}
+
+async function test(name, page, body, readySelector = '#prompt-textarea') {
   const profile = join(work, `p-${Math.random().toString(36).slice(2)}`);
   const ctx = await chromium.launchPersistentContext(profile, {
     headless: true, ...launchBrowser,
@@ -296,8 +354,15 @@ async function test(name, page, body) {
   };
   try {
     const p = await ctx.newPage();
+    // `--throttle 4` slows the renderer to roughly a shared CI runner, which is
+    // how this suite's timing assumptions get checked rather than assumed. It
+    // passed locally and failed on GitHub twice before anything here polled.
+    if (THROTTLE > 1) {
+      const cdp = await ctx.newCDPSession(p);
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: THROTTLE }).catch(() => {});
+    }
     await p.goto(`http://localhost:${PORT}/${page}`);
-    await p.waitForTimeout(READY_MS);
+    await waitReady(p, readySelector);
     await body(p, t, ctx);
     passed++;
     console.log(`${green('ok')}   ${name}`);
@@ -484,7 +549,7 @@ await test('a link whose href carries a key is caught', 'app-contenteditable.htm
   await p.keyboard.press('ControlOrMeta+V');
   await p.waitForTimeout(900);
   t.ok(await panelUp(p), 'the key in the href was not noticed');
-});
+}, '#ce');
 
 await test('a file chosen from the picker is inspected', 'app-textarea.html', async (p, t) => {
   await p.evaluate((s) => {
@@ -580,14 +645,18 @@ await test('a composer in an iframe inside a shadow root is guarded', 'app-ifram
   await p.waitForTimeout(900);
   const v = await frame.evaluate(() => document.getElementById('host').shadowRoot.querySelector('#prompt-textarea').value);
   t.ok(!v.includes(KEY), 'the key reached a composer in an iframe inside a shadow root');
-});
+  // No top-level composer on this page, so readiness cannot be probed through
+  // one; the frame gate is the thing under test anyway.
+}, null);
 
 await test('a host page that hides the panel still cannot send', 'hostile.html', async (p, t) => {
   await p.locator('#prompt-textarea').fill(`my key is ${KEY}`);
   await p.locator('#send').click();
   await p.waitForTimeout(700);
   t.equal(JSON.stringify(await sent(p)), '[]', 'hiding the panel let the send through');
-});
+  // This page hides .chhanni-clean along with everything else, so the probe
+  // cannot see it — which is the point of the page.
+}, null);
 
 // ─────────────────────────────────── the three modes, and what they promise
 //
@@ -612,7 +681,7 @@ async function withMode(ctx, mode) {
 
 await test('strict stops a low-severity finding, which is what its label says', 'app-textarea.html', async (p, t, ctx) => {
   await withMode(ctx, 'strict');
-  await p.reload(); await p.waitForTimeout(READY_MS);
+  await p.reload(); await waitReady(p, '#prompt-textarea');
   await p.locator('#prompt-textarea').fill('mail me at ravi.iyer@acmecorp.in');
   await p.locator('#send').click();
   await p.waitForTimeout(800);
@@ -622,7 +691,7 @@ await test('strict stops a low-severity finding, which is what its label says', 
 
 await test('warn shows a low-severity finding on paste but does not block the send', 'app-textarea.html', async (p, t, ctx) => {
   await withMode(ctx, 'warn');
-  await p.reload(); await p.waitForTimeout(READY_MS);
+  await p.reload(); await waitReady(p, '#prompt-textarea');
   await p.evaluate(() => navigator.clipboard.writeText('mail me at ravi.iyer@acmecorp.in'));
   await p.locator('#prompt-textarea').click();
   await p.keyboard.press('ControlOrMeta+V');
@@ -638,7 +707,7 @@ await test('warn shows a low-severity finding on paste but does not block the se
 
 await test('strict holds a file it could not inspect, rather than mentioning it', 'app-textarea.html', async (p, t, ctx) => {
   await withMode(ctx, 'strict');
-  await p.reload(); await p.waitForTimeout(READY_MS);
+  await p.reload(); await waitReady(p, '#prompt-textarea');
   await p.evaluate(() => {
     const dt = new DataTransfer();
     const big = new Uint8Array(20 * 1024 * 1024); big.fill(0xab);
@@ -653,6 +722,8 @@ await test('strict holds a file it could not inspect, rather than mentioning it'
 
 await test('off intercepts nothing at all', 'app-textarea.html', async (p, t, ctx) => {
   await withMode(ctx, 'off');
+  // In off mode nothing is observable by design, so this one waits rather than
+  // probes — the extension was already proved live before the mode changed.
   await p.reload(); await p.waitForTimeout(READY_MS);
   await p.locator('#prompt-textarea').fill(`my key is ${KEY}`);
   await p.locator('#send').click();
