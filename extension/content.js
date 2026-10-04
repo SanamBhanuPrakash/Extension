@@ -608,6 +608,36 @@
     // ── actions ─────────────────────────────────────────────────────
     const redactable = findings.filter((f) => !f.advisory).length;
     const advisory = findings.length - redactable;
+
+    // ── what actually leaves, if you press the primary button ──
+    //
+    // A findings count answers "how bad". It does not answer the question the
+    // person is actually asking, which is "what is about to reach the model".
+    // Those are different, and the second one is the only one they can act on.
+    if (destination || sendText !== undefined) {
+      const recv = el('div', 'chhanni-receive');
+      recv.appendChild(el('h3', null, destination ? `What ${destination} will receive` : 'What the model will receive'));
+      const lines = el('ul');
+      if (redactable) {
+        lines.appendChild(el('li', null,
+          `${redactable} value${redactable === 1 ? '' : 's'} replaced with ${onPseudonymise ? 'a placeholder or an alias' : 'a placeholder'}`));
+      }
+      if (advisory) {
+        lines.appendChild(el('li', null,
+          `${advisory} thing${advisory === 1 ? '' : 's'} marked “context” stay as written`));
+      }
+      if (typeof sendText === 'string') {
+        const kept = Math.max(0, sendText.length - findings.filter((f) => !f.advisory)
+          .reduce((n, f) => n + (f.end - f.start), 0));
+        lines.appendChild(el('li', null, `${kept.toLocaleString()} characters of your message, unchanged`));
+      }
+      for (const line of (coverage || []).slice(0, 2)) {
+        lines.appendChild(el('li', 'chhanni-receive-gap', `Not inspected — ${line}`));
+      }
+      recv.appendChild(lines);
+      panel.appendChild(recv);
+    }
+
     const actions = el('div', 'chhanni-actions');
     const redactBtn = el('button', 'chhanni-primary',
       redactLabel || (redactable
@@ -650,35 +680,6 @@
         : `Nothing here can be replaced with a placeholder. These ${advisory} are what the text is about, not values in it. This is a decision, not a fix.`));
       block.appendChild(list);
       panel.appendChild(block);
-    }
-
-    // ── what actually leaves, if you press the primary button ──
-    //
-    // A findings count answers "how bad". It does not answer the question the
-    // person is actually asking, which is "what is about to reach the model".
-    // Those are different, and the second one is the only one they can act on.
-    if (destination || sendText !== undefined) {
-      const recv = el('div', 'chhanni-receive');
-      recv.appendChild(el('h3', null, destination ? `What ${destination} will receive` : 'What the model will receive'));
-      const lines = el('ul');
-      if (redactable) {
-        lines.appendChild(el('li', null,
-          `${redactable} value${redactable === 1 ? '' : 's'} replaced with ${onPseudonymise ? 'a placeholder or an alias' : 'a placeholder'}`));
-      }
-      if (advisory) {
-        lines.appendChild(el('li', null,
-          `${advisory} thing${advisory === 1 ? '' : 's'} marked “context” stay as written`));
-      }
-      if (typeof sendText === 'string') {
-        const kept = Math.max(0, sendText.length - findings.filter((f) => !f.advisory)
-          .reduce((n, f) => n + (f.end - f.start), 0));
-        lines.appendChild(el('li', null, `${kept.toLocaleString()} characters of your message, unchanged`));
-      }
-      for (const line of (coverage || []).slice(0, 2)) {
-        lines.appendChild(el('li', 'chhanni-receive-gap', `Not inspected — ${line}`));
-      }
-      recv.appendChild(lines);
-      panel.appendChild(recv);
     }
 
     const hint = el('div', 'chhanni-hint');
