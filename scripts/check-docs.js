@@ -165,8 +165,14 @@ for (const [where, pattern, actual, what] of [
 // DECISIONS numbers its records, and the README says how many there are.
 const records = (read('docs/DECISIONS.md').match(/^### \d+[a-z]?\. /gm) || []).length;
 for (const [, word] of read('README.md').matchAll(/\| \[DECISIONS\][^|]*\| ([\w-]+) decision records/g)) {
-  const asWord = words.indexOf(word.toLowerCase().replace('twenty-', ''));
-  const value = word.toLowerCase().startsWith('twenty-') ? 20 + asWord : asWord;
+  // Handles any "<tens>-<unit>" compound rather than just the twenties, which
+  // is what it understood until there were thirty-one of these.
+  const TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50 };
+  const lower = word.toLowerCase();
+  const [tens, unit] = lower.split('-');
+  const value = TENS[tens] !== undefined
+    ? TENS[tens] + (unit ? words.indexOf(unit) : 0)
+    : words.indexOf(lower);
   if (value !== records) {
     problems.push(`README.md: says ${word} decision records, DECISIONS.md has ${records}`);
   }
