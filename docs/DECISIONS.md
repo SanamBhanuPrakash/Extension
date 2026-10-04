@@ -518,3 +518,111 @@ alarm or unwarranted confidence.
 **Cost.** Four more lines of text in a panel whose whole design is about being
 readable in two seconds. Judged worth it: the two-second read is the score and
 the band, and everything else is for whoever wants it.
+
+---
+
+### 30. On-device AI is an enhancement with a hardware bill, not a plan
+
+**Context.** `docs/LIMITATIONS.md` says "there is no OCR, and there will not
+be", and gives a good reason: Tesseract's WASM build would either triple the
+package or require a network fetch. Chrome's built-in Prompt API changes the
+premise — the model is the browser's, not ours, and inference is local — so the
+reason was re-checked rather than repeated.
+
+**What was measured**, in Chromium 141, against the real extension:
+
+| Context | `LanguageModel`, no flags | `Summarizer`, no flags |
+|---|---|---|
+| Extension page (`chrome-extension://…`) | **present**, `availability()` → `downloadable` | present, `downloadable` |
+| Content script, isolated world | **absent** | **present**, `downloadable` |
+| Web page, main world | absent (needs `--enable-features=AIPromptAPI`) | present |
+
+Two things follow, and they point in different directions.
+
+The Prompt API — the multimodal one, the only one that could look at a
+screenshot — **is not reachable from where Chhanni does its work.** Using it
+means an offscreen document created from a service worker, the `offscreen`
+permission, and image bytes crossing `chrome.runtime` messaging. This project
+has no background context at all today, and `ci.yml` fails the build on any
+permission beyond `storage` and `scripting`. That is three deliberate
+properties spent on one feature.
+
+The bill on the user's side is larger: roughly 4 GB of model, **22 GB of free
+disk** before Chrome will download it, and either a GPU with 4 GB of VRAM or a
+CPU with 16 GB of RAM and four cores — desktop only, so every mobile user is
+out. `availability()` returning `downloadable` is the normal state, not an
+error, and it means the feature is absent until several gigabytes have moved.
+
+**Decision.** Not now, and when it does happen, under a rule that is written
+down before the code is: **the model may only ever add findings.** It may say
+"this image appears to contain an email address and an account number". It may
+never say "clean", never clear a deterministic finding, and never be the reason
+a status moves from `opaque` to anything. An unavailable, downloading, slow or
+wrong model must leave today's behaviour exactly as it is — which is a
+screenshot reported as not inspected, by name.
+
+That ordering is the whole product. A probabilistic layer that can silence a
+deterministic one is not a safety feature, it is a way to be confidently wrong,
+and it would turn "we told you what we could not read" into "we think it's
+fine". The honest version of this feature makes `opaque` into `partial`. It can
+never make it `readable`.
+
+**Cost of waiting.** Screenshots remain the largest category of real-world leak
+this cannot see, and `LIMITATIONS` keeps saying so by name. That is the correct
+trade while the alternative is a feature most installs cannot run.
+
+**Noted for later.** `Summarizer` *is* reachable from the content script with
+no flags and no new permission, which is the cheap door — but it is text-only,
+so it is no use for pixels. Where it could help is the semantic layer in
+`context.js`: "this reads like unreleased commercial terms" is a judgement,
+not a pattern. Same rule applies, and the same 22 GB.
+
+---
+
+### 31. Agent and tool preflight is the right shape and the wrong year
+
+**Context.** The threat is moving from "a person pasted a secret" to "an agent
+sent one", and the browser is growing the plumbing for it. WebMCP lets a site
+expose structured tools to an agent; Chrome's own guidance for it is about
+classifying read-only against state-changing tools, restricting exposure to
+trusted origins, labelling untrusted content and requiring confirmation before
+consequential actions.
+
+What that guidance does not do — and says as much — is stop a model that has
+been deceived from calling a tool it is allowed to call. A confirmation gate
+asks *whether* an action may proceed. Nothing inspects **what is in the
+arguments**. `createCustomer({name, email, phone})`, `sendEmail({to, body})`,
+`uploadFile(export.xlsx)`, `open(urlWithToken)` — each is a legitimate call
+that may carry exactly the data this engine already recognises, to a
+destination the person never looked at.
+
+That is the same job Chhanni does, on a new surface, with no new permission and
+no network call. It is a better fit for this architecture than competing on
+detector count, because deterministic inspection is precisely what a
+probabilistic agent cannot do for itself.
+
+**What was measured.** `document.modelContext` and `navigator.modelContext` are
+both `undefined` in Chromium 141 — page world, isolated world and extension
+page alike, with and without AI feature flags. The origin trial runs from
+Chrome 149 to 156, with stable support expected later; the API was also renamed
+mid-flight, `navigator.modelContext` having been deprecated in Chromium 150 in
+favour of `document.modelContext`.
+
+**Decision.** Build nothing yet, and do not describe Chhanni as agent-aware.
+There is no API to attach to in any shipping browser, the surface is still
+moving, and a security claim about a capability that does not exist is worse
+than having no capability.
+
+What is worth doing now costs nothing and is already underway: keep the
+inspection layer free of any assumption that its input came from a keyboard.
+`guardSubmission()` takes text, a target and a replay function; it does not
+care whether a human or a script caused the event, which is why guarding
+programmatic clicks was a two-line change rather than a redesign. A tool
+argument is text with a destination attached. When the API lands, the engine
+should already be in the right shape to inspect one.
+
+**The open question**, which is honest to leave open: an extension can observe
+the page, and WebMCP tools execute in the page with the user's session. Whether
+an extension can *interpose* on a tool call — rather than merely watch one —
+is not determined by anything readable today, and that distinction decides
+whether this is a product or a log.
