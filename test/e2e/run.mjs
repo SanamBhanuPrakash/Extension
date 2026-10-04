@@ -403,7 +403,56 @@ async function test(name, page, body, readySelector = '#prompt-textarea') {
 const sent = (p) => p.evaluate(() => (window.__sent || []).map((s) => s.how + ':' + (/AKIA[A-Z0-9]{16}/.test(s.text) ? 'WITH-KEY' : 'clean')));
 const files = (p) => p.evaluate(() => window.__files || []);
 const panelUp = (p) => p.evaluate(() => !!document.querySelector('.chhanni-panel'));
-const noticeUp = (p) => p.evaluate(() => !!document.querySelector('.chhanni-notice'));
+/**
+ * A notice about the content, not about the extension's own startup.
+ *
+ * `.chhanni-notice` is worn by the boot hold, the engine-failure banner and
+ * the real notices alike, and the boot one stays on screen for six seconds —
+ * long enough to be the first match for a test that pastes something a moment
+ * later. That is how CI went red on a test about a pasted image: it read the
+ * startup notice and reported that the user had not been told about pixels.
+ */
+const CONTENT_NOTICE = '.chhanni-notice:not([data-chhanni-kind="starting"])'
+  + ':not([data-chhanni-kind="started"]):not([data-chhanni-kind="engine-failed"])';
+const noticeUp = (p) => p.evaluate((sel) => !!document.querySelector(sel), CONTENT_NOTICE);
+
+/** Wait for the panel, rather than sleeping and hoping it is up by then. */
+const waitPanel = (p, timeout = 20000) => p
+  .waitForSelector('.chhanni-panel', { timeout, state: 'attached' })
+  .then(() => true).catch(() => false);
+
+/** Wait for any notice about the content. Same reasoning as waitPanel. */
+const waitAnyNotice = (p, timeout = 20000) => p
+  .waitForSelector(CONTENT_NOTICE, { timeout, state: 'attached' })
+  .then(() => true).catch(() => false);
+
+/**
+ * Wait for a notice that says a particular thing, rather than sleeping and
+ * hoping.
+ *
+ * This is the second time this suite has been red on GitHub for betting on the
+ * hardware. The readiness waits were replaced with polling last time; the
+ * per-assertion waits were left as fixed sleeps, and `waitForTimeout(2000)`
+ * followed by "the user was not told about the pixels" is the same bet in a
+ * smaller place. A runner two or three times slower than the machine this was
+ * written on loses it.
+ *
+ * Returns the text if it arrives and '' if it does not, so the caller's own
+ * assertion is what reports the failure.
+ */
+async function waitNotice(p, pattern, timeout = 15000) {
+  const found = await p.waitForFunction(
+    ([sel, src]) => {
+      const el = document.querySelector(sel);
+      return el && new RegExp(src, 'i').test(el.innerText) ? el.innerText : null;
+    },
+    [CONTENT_NOTICE, pattern.source], { timeout },
+  ).then((h) => h.jsonValue()).catch(() => null);
+  if (found) return found;
+  // Nothing matched in time. Hand back whatever is there, so the failure
+  // message names what the user would actually have seen.
+  return p.evaluate((sel) => document.querySelector(sel)?.innerText || '', CONTENT_NOTICE);
+}
 const cleanUp = (p) => p.evaluate(() => !!document.querySelector('.chhanni-clean'));
 
 async function paste(p, text, selector = '#prompt-textarea') {
@@ -533,8 +582,7 @@ await test('a pasted image goes through inspection and its coverage is stated', 
   }, PNG_B64);
   await p.locator('#prompt-textarea').click();
   await p.keyboard.press('ControlOrMeta+V');
-  await p.waitForTimeout(2000);
-  const notice = await p.evaluate(() => document.querySelector('.chhanni-notice')?.innerText || '');
+  const notice = await waitNotice(p, /not the pixels|no OCR/);
   t.ok(/not the pixels|no OCR/i.test(notice),
     `the user was not told the pixels went uninspected: ${JSON.stringify(notice.slice(0, 120))}`);
   const got = await files(p);
@@ -552,10 +600,14 @@ await test('an attached JPEG loses its EXIF before the page gets it', 'app-texta
     input.files = dt.files;
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }, JPEG.toString('base64'));
-  await p.waitForTimeout(2000);
-  t.ok(await panelUp(p), 'a JPEG with GPS and a photographer name raised nothing');
+  t.ok(await waitPanel(p), 'a JPEG with GPS and a photographer name raised nothing');
   await p.locator('.chhanni-panel .chhanni-primary').click();
-  await p.waitForTimeout(1500);
+  // Until the *bytes* are there, not merely the record. The fixture fills
+  // `text` from `arrayBuffer()`, so a poll on `length > 0` returns while
+  // `text` is still null — which is a worse wait than the fixed sleep it
+  // replaced, because it looks precise.
+  await p.waitForFunction(() => (window.__files || []).some((f) => f.text !== null),
+    null, { timeout: 20000 }).catch(() => {});
   const got = await files(p);
   t.ok(got.length === 1, `expected one delivered file, got ${got.length}`);
   t.ok(!got[0].text.includes(PERSON), 'the photographer name survived into the delivered JPEG');
@@ -584,8 +636,7 @@ await test('a file chosen from the picker is inspected', 'app-textarea.html', as
     i.files = dt.files;
     i.dispatchEvent(new Event('change', { bubbles: true }));
   }, SECRET);
-  await p.waitForTimeout(1500);
-  t.ok(await panelUp(p), 'the attachment was not inspected');
+  t.ok(await waitPanel(p), 'the attachment was not inspected');
   t.equal((await files(p)).length, 0, 'the file reached the page before the user decided');
 });
 
@@ -598,8 +649,7 @@ await test('an uninspectable file is named, not passed silently', 'app-textarea.
     i.files = dt.files;
     i.dispatchEvent(new Event('change', { bubbles: true }));
   });
-  await p.waitForTimeout(3000);
-  t.ok(await noticeUp(p), 'nothing told the user the file was not read');
+  t.ok(await waitAnyNotice(p), 'nothing told the user the file was not read');
 });
 
 // ─────────────────────────────── the composer's state, not its appearance
@@ -740,8 +790,7 @@ await test('strict holds a file it could not inspect, rather than mentioning it'
     const i = document.getElementById('picker'); i.files = dt.files;
     i.dispatchEvent(new Event('change', { bubbles: true }));
   });
-  await p.waitForTimeout(3000);
-  t.ok(await panelUp(p), 'strict accepted an entirely uninspected 20 MB file with only a toast');
+  t.ok(await waitPanel(p), 'strict accepted an entirely uninspected 20 MB file with only a toast');
   t.equal((await files(p)).length, 0, 'the file reached the page before the user decided');
 });
 

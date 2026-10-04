@@ -140,6 +140,23 @@
     for (const type of BOOT_EVENTS) {
       try { document.removeEventListener(type, holdWhileLoading, true); } catch {}
     }
+    /**
+     * And stop the hold notice from lying.
+     *
+     * "Chhanni is still starting — try again in a moment" is true when it is
+     * written and false a moment later, and it sat on screen for six seconds
+     * either way. Somebody who reads it after the engine is ready is being
+     * told to wait for something that has already happened, which is a small
+     * lie of exactly the kind this product exists not to tell.
+     *
+     * CI found this, and not by asserting on it: a test about a pasted
+     * image read `.chhanni-notice` and got this one, because it was still
+     * there. Three unrelated things wear that class.
+     */
+    if (bootNotice && bootNotice.isConnected) {
+      bootNotice.textContent = 'Chhanni is ready now \u2014 that one was held, not checked. Paste it again.';
+      bootNotice.dataset.chhanniKind = 'started';
+    }
   };
 
   // Parallel, not sequential: eight round-trips to the extension's own
