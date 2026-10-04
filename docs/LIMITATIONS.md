@@ -644,21 +644,36 @@ investigation tool rather than a gate, because at 4x the control itself swings
 250 ms against a control that moves 800 ms is a coin toss dressed as a gate.
 It is where three of the defects below were found.
 
-It also carries the one number on this page that is not comfortable. On the
-1500-turn fixture at 4x, median of five runs, Chhanni adds **about 1.3 s of
-blocking across a streaming reply and the four seconds after it** — on top of
-the page's own 3.7 s — and about 80 ms over five seconds of an idle tab. Paste
-and Send stay within budget (+168 ms and +135 ms). So: on a slow machine, with
-a 1.7 MB conversation, while a reply is streaming, this extension is part of
-why that page is not smooth. It is not most of why, and the budgets at 1x are
-met with room to spare, but the honest summary is that the response scanner's
-cost still scales with the length of the conversation.
+It also carries the numbers on this page that are not comfortable. On the
+1500-turn fixture at 4x, median of three runs, over the same page with no
+extension loaded:
 
-The fix for that is known and deliberately not done yet — see decision 35. It
-is to stop reading the whole transcript to find the end of it, which needs a
-structural mark in the DOM rather than a character offset, and a mark that is
-wrong would mean a reply that is never scanned. A miss is not an acceptable
-cost for a second of smoothness, so it waits for a design that cannot miss.
+| | added |
+|---|---|
+| blocking across a streaming reply and the 4 s after it | **+1,129 ms** (page alone: 3,825 ms) |
+| blocking over 5 s of an idle tab | +81 ms |
+| paste to verdict | +104 ms |
+| **Send held** | **+273 ms** (past its +200 ms budget) |
+
+So: on a slow machine, with a 1.7 MB conversation, while a reply is streaming,
+this extension is part of why that page is not smooth — not most of why, but
+part. And a Send click on that thread is held about a quarter of a second
+longer than the page would have taken by itself, which is over the budget this
+project set for itself and is recorded here rather than quietly re-budgeted.
+
+The notice latency at 4x was 6.3 s rather than 3 s, and that one is by design:
+the scanner derives its own interval so it never takes more than 2% of the
+main thread, and on that machine it reported settling on 6,360 ms. Later and
+stated beats smooth-looking and silent, but it is still later.
+
+The honest summary is that the response scanner's cost scales with the length
+of the conversation. The fix for that is known and deliberately not done yet —
+see decision 35. It is to stop reading the whole transcript to find the end of
+it, which needs a structural mark in the DOM rather than a character offset,
+and a mark that is wrong would mean a reply that is never scanned. A miss is
+not an acceptable price for a second of smoothness, so it waits for a design
+that cannot miss.
+
 
 ---
 

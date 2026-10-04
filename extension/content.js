@@ -1100,6 +1100,7 @@
   const SLICE_BUDGET_MS = 20;     // how long one pass may hold the thread
   const MAX_HISTORY_BYTES = 120000;
 
+  let started = false;      // has a pass anchored the marks on this page yet
   let growthFrom = -1;      // -1 until the first pass sets the waterline
   let waterline = 0;        // text length at the first pass: below it is old
   let historyFrom = 0;      // the history cursor, descending from waterline
@@ -1116,7 +1117,7 @@
    * moved at all. Everything below the cursor is unread, whether because the
    * budget stops there or because the page has been too busy to get to it.
    */
-  const unreadHistory = () => (growthFrom < 0 ? 0 : Math.max(0, historyFrom));
+  const unreadHistory = () => (started ? Math.max(0, historyFrom) : 0);
 
   /**
    * The page's text, read as rarely as it can be.
@@ -1161,26 +1162,36 @@
     const body = pageText(false);
     if (body.length < 40) return;
 
-    // A shorter page means a new conversation, or virtual scrolling recycling
-    // what was there. Either way the marks no longer refer to this text.
+    // A page that is shorter than the mark has had text taken out of it, and
+    // there are two very different reasons for that.
     //
-    // What does *not* follow is that the dedupe set should be emptied. It is
-    // keyed on a finding's value and the text around it, so keeping it is what
-    // stops a page that wobbles in length — a "stop generating" button coming
-    // and going is enough — from announcing the same key over and over. Only a
-    // page that has lost most of its text is a different conversation, and
-    // only then is announcing the same key again the right thing to do.
-    if (body.length < growthFrom) {
-      if (body.length < growthFrom / 2) seenResponses.clear();
-      resetMarks();
-    }
-
-    if (growthFrom < 0) {
+    // A wobble — a "stop generating" button's label coming and going is
+    // enough, and so is an indicator that blinks — invalidates the growth
+    // mark and nothing else. The first version treated it as a full reset,
+    // which restarted the history walk every time, so on a live page the walk
+    // never finished: measured on a 1500-turn thread, 1.68 million characters
+    // still unread because the cursor kept going back to the top.
+    //
+    // A page that has lost most of its text is a different conversation. That
+    // invalidates everything, including the dedupe set — which is keyed on a
+    // finding's value and the text around it, so keeping it is exactly what
+    // stops a wobbling page from announcing the same key over and over, and
+    // dropping it is exactly right when the same key turns up in a new
+    // thread.
+    if (!started) {
+      started = true;
       growthFrom = Math.max(0, body.length - PASS_BYTES);
       waterline = growthFrom;
       historyFrom = waterline;
       historyFloor = Math.max(0, waterline - MAX_HISTORY_BYTES);
       queueHistory();
+    } else if (body.length < growthFrom) {
+      if (body.length < growthFrom / 2) {
+        seenResponses.clear();
+        resetMarks();
+        return;                       // the next pass re-anchors from scratch
+      }
+      growthFrom = Math.max(0, body.length - PASS_BYTES);
     }
 
     // Forward through whatever arrived, in slices, for as long as one pass is
@@ -1236,6 +1247,7 @@
    * `queueHistory()` return immediately for the rest of the page's life.
    */
   function resetMarks() {
+    started = false;
     growthFrom = -1;
     historyFrom = 0;
     historyFloor = 0;
@@ -1393,6 +1405,12 @@
           // True while an administrator's policy has not been read yet, so
           // what is running is the person's own settings.
           policyPending,
+          // What a pass costs here, and therefore how often one runs. Not
+          // decoration: the latency of a notice about a reply is this
+          // number, so anything asserting a bound on that latency has to
+          // read it rather than assume a constant.
+          passCost: Math.round(passCost),
+          maxWait,
         });
         return true;
       });

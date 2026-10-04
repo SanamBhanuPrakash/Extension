@@ -97,10 +97,12 @@ imposes — the first version reported a 960 ms "cliff" that was entirely its ow
 windowing. And the budgets are deltas, because at 4x throttle that fixture
 blocks for about four seconds with nothing installed at all.
 
-The uncomfortable number is kept too: at 4x on the 1500-turn fixture, Chhanni
-adds about 1.3 s of blocking across a streaming reply. [Decision
-35](docs/DECISIONS.md) records the fix for that and why it is not in this
-change.
+The uncomfortable numbers are kept too. At 4x on the 1500-turn fixture Chhanni
+adds **+1,129 ms** of blocking across a streaming reply and holds a Send click
+**+273 ms** longer than the page would have by itself — the second of those is
+past the budget this project set, and is recorded rather than quietly
+re-budgeted. [Decision 35](docs/DECISIONS.md) says what the fix is and why it
+is not in this change.
 
 - 115 tests, 27 browser cases, and a performance suite with budgets.
 

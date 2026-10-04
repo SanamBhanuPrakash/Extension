@@ -181,22 +181,32 @@ const REPLY = `Here is the configuration you asked for. Set AWS_ACCESS_KEY_ID=${
  *                    re-fires it, so every millisecond is one the product
  *                    added to the single action the user cares most about.
  *  noticeMs          how long a credential sits in a streamed reply before
- *                    Chhanni says so. Absolute, because there is no page to
- *                    compare against — an unguarded page never says anything
- *                    — and scaled by the throttle, because it is dominated by
- *                    the scanner's own 3 s ceiling. Not a comfort number: a
- *                    cap on it is the only thing that distinguishes "slow"
- *                    from "never", and `never` is the state this found. The
- *                    budget is twice the measured median rather than tight,
- *                    because what it has to catch is the difference between
- *                    three seconds and infinity, not between three and four.
+ *                    Chhanni says so. There is no page to compare against —
+ *                    an unguarded page never says anything — so this one is
+ *                    derived from the machine instead.
+ *
+ *                    The scanner sets its own pass interval so that it never
+ *                    takes more than 2% of the main thread, which makes this
+ *                    latency a function of what a pass costs on this machine.
+ *                    A fixed number here would be a bet on the runner — the
+ *                    mistake this suite's sibling made twice — and deriving
+ *                    it from the page-read cost was the same mistake wearing
+ *                    arithmetic: a pass is the read *plus* the scan, and at
+ *                    4x that estimate was out by 1,250 ms.
+ *
+ *                    So the extension is asked. It reports the interval it
+ *                    has settled on, and the budget is that plus three
+ *                    seconds for the debounce and the scan.
+ *
+ *                    What it has to catch is the difference between three
+ *                    seconds and infinity. `never` is the state this found.
  */
 const BUDGET = {
   idleBlockingMs: { over: 50 },
   streamBlockingMs: { over: 250 },
   pasteMs: { over: 250 },
   sendMs: { over: 200 },
-  noticeMs: { absolute: 6000, scale: true },
+  noticeMs: { derived: (m) => (m.maxWait ? m.maxWait + 3000 : 6000) },
 };
 
 const PROBE = `
@@ -248,6 +258,43 @@ async function quiet(page, settleMs = 1200, capMs = 30000) {
 }
 const blocking = (page, a, b) => page.evaluate(([x, y]) => Math.round(window.__blocking(x, y)), [a, b]);
 const now = (page) => page.evaluate(() => performance.now());
+
+/**
+ * Ask the extension what it thinks is true of this tab.
+ *
+ * Done after the measurement window, never during: it opens two more pages,
+ * and the figure being read — the pass interval the scanner has settled on —
+ * only grows, so reading it late reads the worst case.
+ *
+ * This is also the only automated exercise of the page-state channel the
+ * popup uses, which is why a missing answer is reported rather than
+ * defaulted: a popup that silently says nothing about a page it could not
+ * read is the failure mode this whole message exists to prevent.
+ */
+async function pageState(ctx) {
+  let admin = null;
+  let opt = null;
+  try {
+    admin = await ctx.newPage();
+    await admin.goto('chrome://extensions');
+    await admin.waitForTimeout(500);
+    const id = await admin.evaluate(() => document.querySelector('extensions-manager')?.shadowRoot
+      ?.querySelector('extensions-item-list')?.shadowRoot?.querySelector('extensions-item')?.id);
+    if (!id) return null;
+    opt = await ctx.newPage();
+    await opt.goto(`chrome-extension://${id}/options.html`);
+    await opt.waitForTimeout(300);
+    return await opt.evaluate(async () => {
+      const tabs = await chrome.tabs.query({ url: 'http://localhost/*' });
+      if (!tabs.length) return null;
+      return chrome.tabs.sendMessage(tabs[0].id, { type: 'chhanni:page-state' });
+    });
+  } catch { return null; }
+  finally {
+    await opt?.close().catch(() => {});
+    await admin?.close().catch(() => {});
+  }
+}
 
 async function measure(n, withExtension) {
   const { ctx, page, profile } = await open(n, withExtension);
@@ -312,6 +359,14 @@ async function measure(n, withExtension) {
     await page.evaluate(() => window.__stopTicker());
 
     out.heapMb = Math.round(await page.evaluate(() => (performance.memory ? performance.memory.usedJSHeapSize : 0)) / 1048576 * 10) / 10;
+
+    if (withExtension) {
+      const state = await pageState(ctx);
+      out.maxWait = state?.maxWait ?? null;
+      out.passCost = state?.passCost ?? null;
+      out.historyUnread = state?.historyUnread ?? null;
+      out.sweepLimit = state?.sweepLimit ?? null;
+    }
   } finally {
     await ctx.close().catch(() => {});
     rmSync(profile, { recursive: true, force: true });
@@ -372,6 +427,8 @@ for (const n of TURNS) {
   console.log(`              ${pair('idleBlockingMs')}  ${pair('streamBlockingMs')}`);
   console.log(`              ${pair('pasteMs')}  ${pair('sendMs')}  `
     + `notice ${ext.noticed ? `${ext.noticeMs}ms` : red('never')}  heap ${ext.heapMb}MB`);
+  console.log(dim(`              the extension reports: a pass costs ${ext.passCost}ms so it runs every `
+    + `${ext.maxWait}ms; ${ext.historyUnread} chars of history unread${ext.sweepLimit ? `; sweep stopped: ${ext.sweepLimit}` : ''}`));
 }
 
 const starved = await starvation(TURNS[TURNS.length - 1]);
@@ -384,10 +441,11 @@ for (const { n, bare, ext } of rows) {
   for (const [k, rule] of Object.entries(BUDGET)) {
     const got = ext[k];
     if (got === undefined) continue;
-    if (rule.absolute !== undefined) {
-      const limit = rule.scale ? rule.absolute * THROTTLE : rule.absolute;
+    if (rule.derived) {
+      const limit = rule.derived(ext);
       if (got > limit) {
-        console.log(red(`  FAIL  ${n} turns: ${k} ${got === Infinity ? 'never' : got + 'ms'} > ${limit}ms`));
+        console.log(red(`  FAIL  ${n} turns: ${k} ${got === Infinity ? 'never' : got + 'ms'} > ${limit}ms `
+          + dim(ext.maxWait ? `(the scanner reports a ${ext.maxWait}ms interval)` : '(the extension did not answer)')));
         failed++;
       }
       continue;
