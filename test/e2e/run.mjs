@@ -28,7 +28,8 @@
  * installed it still gets a green `npm test`. CI installs it for this job.
  */
 import { createServer } from 'node:http';
-import { readFileSync, writeFileSync, cpSync, rmSync, mkdtempSync, existsSync } from 'node:fs';
+import { deflateSync } from 'node:zlib';
+import { readFileSync, writeFileSync, readdirSync, cpSync, rmSync, mkdtempSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -53,10 +54,45 @@ if (!chromium) {
   console.log(dim('     npm i --no-save playwright && npx playwright install chromium'));
   process.exit(0);
 }
-let executablePath;
-for (const p of ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome']) {
-  if (existsSync(p)) { executablePath = p; break; }
+/**
+ * Find a Chromium that can actually load an extension.
+ *
+ * This is the line that turned the suite green here and red on CI, so it is
+ * worth being explicit about. Since Playwright 1.49 `headless: true` runs
+ * `chromium_headless_shell` by default, and the headless shell **cannot load
+ * extensions at all** — it does not fail loudly, it simply starts a browser
+ * where nothing is installed and every assertion about interception fails.
+ * The first version of this file hardcoded one absolute path that happened to
+ * exist on the machine it was written on, so CI silently fell through to the
+ * shell.
+ *
+ * Order: an explicit override, then any full Chromium Playwright has
+ * installed (the GitHub runner puts it under ~/.cache/ms-playwright), then
+ * the `chromium` channel, which also resolves to the full browser.
+ */
+function findChromium() {
+  if (process.env.CHHANNI_E2E_CHROME) return { executablePath: process.env.CHHANNI_E2E_CHROME };
+  const roots = [
+    process.env.PLAYWRIGHT_BROWSERS_PATH,
+    join(process.env.HOME || '', '.cache', 'ms-playwright'),
+    '/opt/pw-browsers',
+    '/ms-playwright',
+  ].filter(Boolean);
+  for (const root of roots) {
+    let entries;
+    try { entries = readdirSync(root); } catch { continue; }
+    // chromium-1234, never chromium_headless_shell-1234.
+    for (const dir of entries.filter((d) => /^chromium-\d+$/.test(d)).sort().reverse()) {
+      for (const rel of ['chrome-linux/chrome', 'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
+                         'chrome-win/chrome.exe']) {
+        const p = join(root, dir, rel);
+        if (existsSync(p)) return { executablePath: p };
+      }
+    }
+  }
+  return { channel: 'chromium' };
 }
+const browser = findChromium();
 
 if (!existsSync(join(root, 'dist', 'chrome', 'engine', 'detect.js'))) {
   console.error(red('e2e: dist/chrome is missing or incomplete. Run `node scripts/build.js` first.'));
@@ -89,6 +125,13 @@ const server = createServer((q, s) => {
 });
 await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 
+const CRC_TABLE = (() => {
+  const t = new Int32Array(256);
+  for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[i] = c; }
+  return t;
+})();
+function crc32(buf) { let c = -1; for (let i = 0; i < buf.length; i++) c = (c >>> 8) ^ CRC_TABLE[(c ^ buf[i]) & 0xff]; return (c ^ -1) >>> 0; }
+
 const KEY = ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join('');
 const SECRET = `AWS_ACCESS_KEY_ID=${KEY}`;
 const READY_MS = 3500;          // comfortably past a cold start
@@ -96,10 +139,74 @@ const READY_MS = 3500;          // comfortably past a cold start
 let passed = 0;
 const failures = [];
 
+/**
+ * Before asserting anything, prove the extension is actually running.
+ *
+ * Every test below asserts that something did NOT happen — that the provider
+ * did not receive the key. That shape of assertion passes trivially in a
+ * browser where the extension failed to load and the page therefore never
+ * submitted anything, and it passes trivially if the mock page is broken. So
+ * the suite starts by proving the opposite direction: a known secret is
+ * intercepted, and a known-clean message still gets through. If either is
+ * wrong, nothing below is evidence of anything and the run stops here.
+ */
+async function preflight() {
+  const profile = join(work, 'preflight');
+  const ctx = await chromium.launchPersistentContext(profile, {
+    headless: true, ...browser,
+    permissions: ['clipboard-read', 'clipboard-write'],
+    viewport: { width: 1000, height: 800 },
+    args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
+           '--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    const p = await ctx.newPage();
+    await p.goto(`http://localhost:${PORT}/app-textarea.html`);
+    await p.waitForTimeout(READY_MS);
+
+    // 1. the mock provider works at all
+    await p.locator('#prompt-textarea').fill('hello');
+    await p.locator('#send').click();
+    await p.waitForTimeout(400);
+    const clean = await p.evaluate(() => (window.__sent || []).length);
+    if (clean !== 1) {
+      throw new Error(`the mock provider recorded ${clean} sends for a clean message, expected 1 — the fixture is broken, not the extension`);
+    }
+
+    // 2. the extension is loaded and intercepting
+    await p.evaluate((t) => navigator.clipboard.writeText(t), SECRET);
+    await p.locator('#prompt-textarea').fill('');
+    await p.locator('#prompt-textarea').click();
+    await p.keyboard.press('ControlOrMeta+V');
+    await p.waitForTimeout(900);
+    const panel = await p.evaluate(() => !!document.querySelector('.chhanni-panel'));
+    const value = await p.locator('#prompt-textarea').inputValue();
+    if (!panel || value.includes(KEY)) {
+      throw new Error('the extension did not intercept a known credential — it is probably not loaded. '
+        + `Browser: ${JSON.stringify(browser)}. Playwright's headless shell cannot load extensions; `
+        + 'a full Chromium is required.');
+    }
+  } finally {
+    await ctx.close().catch(() => {});
+    rmSync(profile, { recursive: true, force: true });
+  }
+}
+
+console.log(dim(`browser: ${browser.executablePath || `channel ${browser.channel}`}`));
+try {
+  await preflight();
+  console.log(dim('preflight: the extension is loaded and intercepting\n'));
+} catch (err) {
+  console.error(red(`\npreflight FAILED — the suite below would prove nothing, so it did not run.`));
+  console.error(`  ${err.message}`);
+  await new Promise((r) => server.close(r));
+  process.exit(1);
+}
+
 async function test(name, page, body) {
   const profile = join(work, `p-${Math.random().toString(36).slice(2)}`);
   const ctx = await chromium.launchPersistentContext(profile, {
-    headless: true, executablePath,
+    headless: true, ...browser,
     permissions: ['clipboard-read', 'clipboard-write'],
     viewport: { width: 1000, height: 800 },
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
@@ -195,22 +302,96 @@ await test('a clean check says so, once', 'app-textarea.html', async (p, t) => {
 });
 
 // ────────────────────────────────────────────────────── other ways content moves
-await test('a pasted image is inspected, not ignored', 'app-textarea.html', async (p, t) => {
-  await p.evaluate(async () => {
-    const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+// ── images: delivery is not inspection ──────────────────────────────────────
+//
+// This block used to paste a 1x1 PNG with no metadata and assert that a file
+// reached the page. That proves delivery and nothing else, which is a
+// misleading thing for a security suite to assert — it would pass unchanged if
+// inspection were removed entirely. Both fixtures below carry a photographer's
+// name and a location, so the assertions can be about what was *removed*.
+//
+// Two doors, because they are different code paths: Chromium's async clipboard
+// only accepts image/png on write, so the clipboard case uses a PNG with tEXt
+// chunks and the attachment case uses the repository's EXIF JPEG fixture.
+const PERSON = 'Priya Nair';
+const PLACE = '18.52, 73.855';
+
+/** A deterministic PNG carrying tEXt metadata. Built here so it is readable. */
+function taggedPng() {
+  const chunk = (type, data) => {
+    const t = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(t));
+    return Buffer.concat([len, t, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0); ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8; ihdr[9] = 2;
+  const text = (k, v) => chunk('tEXt', Buffer.from(`${k}\0${v}`, 'latin1'));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    text('Author', PERSON),
+    text('Comment', `Taken at ${PLACE} on the Northwind handset`),
+    chunk('IDAT', deflateSync(Buffer.from([0, 255, 0, 0]))),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+const TAGGED_PNG = taggedPng();
+const PNG_B64 = TAGGED_PNG.toString('base64');
+const JPEG = readFileSync(join(root, 'test', 'fixtures', 'photo.jpg'));
+
+await test('a pasted image goes through inspection and its coverage is stated', 'app-textarea.html', async (p, t) => {
+  // What this can and cannot assert, because it matters.
+  //
+  // Chromium re-encodes an image written through the async Clipboard API:
+  // measured, 165 bytes in carrying tEXt chunks, 87 bytes out carrying only
+  // IHDR/IDAT/IEND. So a test cannot put metadata on the clipboard and then
+  // check that Chhanni removed it — the browser removed it first, and any
+  // assertion to the contrary would be testing Chromium, not this extension.
+  // (That measurement is for a page writing to the clipboard. Whether an
+  // OS-level copy — a screenshot tool, "Copy image" in another application —
+  // preserves metadata is not something this harness can reach, and
+  // docs/LIMITATIONS.md says so rather than this suite implying otherwise.)
+  //
+  // What is worth asserting is the honest part: the image went through
+  // inspection rather than past it, and the user was told what was not read.
+  // The real blind spot for a pasted screenshot is the pixels, and saying so
+  // is the product.
+  await p.evaluate(async (b64) => {
     const bin = atob(b64); const u8 = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': new Blob([u8], { type: 'image/png' }) })]);
-  });
+  }, PNG_B64);
   await p.locator('#prompt-textarea').click();
   await p.keyboard.press('ControlOrMeta+V');
-  await p.waitForTimeout(1500);
-  // The image is a 1x1 PNG with no metadata, so there is nothing to find —
-  // what must be true is that it went through inspection and was handed on,
-  // rather than reaching the page unseen.
+  await p.waitForTimeout(2000);
+  const notice = await p.evaluate(() => document.querySelector('.chhanni-notice')?.innerText || '');
+  t.ok(/not the pixels|no OCR/i.test(notice),
+    `the user was not told the pixels went uninspected: ${JSON.stringify(notice.slice(0, 120))}`);
   const got = await files(p);
-  t.ok(got.length > 0, 'the image never reached the page at all');
-  t.ok(got.some((f) => f.how === 'drop' || f.how === 'paste'), `unexpected delivery: ${JSON.stringify(got)}`);
+  t.ok(got.length === 1, `expected the image to be handed on after inspection, got ${got.length}`);
+});
+
+await test('an attached JPEG loses its EXIF before the page gets it', 'app-textarea.html', async (p, t) => {
+  t.ok(JPEG.toString('latin1').includes(PERSON), 'the JPEG fixture lost its EXIF — the test is void');
+  await p.evaluate(async (b64) => {
+    const bin = atob(b64); const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const dt = new DataTransfer();
+    dt.items.add(new File([u8], 'holiday.jpg', { type: 'image/jpeg' }));
+    const input = document.getElementById('picker');
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, JPEG.toString('base64'));
+  await p.waitForTimeout(2000);
+  t.ok(await panelUp(p), 'a JPEG with GPS and a photographer name raised nothing');
+  await p.locator('.chhanni-panel .chhanni-primary').click();
+  await p.waitForTimeout(1500);
+  const got = await files(p);
+  t.ok(got.length === 1, `expected one delivered file, got ${got.length}`);
+  t.ok(!got[0].text.includes(PERSON), 'the photographer name survived into the delivered JPEG');
+  t.ok(!got[0].text.includes('73.855'), 'the GPS longitude survived into the delivered JPEG');
 });
 
 await test('a link whose href carries a key is caught', 'app-contenteditable.html', async (p, t) => {

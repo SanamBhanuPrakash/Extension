@@ -24,7 +24,18 @@
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send('enter'); }
   });
-  const take = (list, how) => { for (const f of list) window.__files.push({ name: f.name, size: f.size, type: f.type, how }); };
+  // Records the BYTES, not just the name. A test that asserts "a file arrived"
+  // proves delivery; only the bytes prove what was done to it.
+  const take = (list, how) => {
+    for (const f of list) {
+      const rec = { name: f.name, size: f.size, type: f.type, how, text: null };
+      window.__files.push(rec);
+      f.arrayBuffer().then((buf) => {
+        rec.text = new TextDecoder('latin1').decode(new Uint8Array(buf));
+        rec.bytes = buf.byteLength;
+      });
+    }
+  };
   document.getElementById('picker').addEventListener('change', (e) => take(e.target.files, 'picker'));
   // A real composer accepts a dropped file and a pasted image.
   document.addEventListener('drop', (e) => { if (e.dataTransfer?.files?.length) take(e.dataTransfer.files, 'drop'); });
