@@ -81,8 +81,57 @@ if (manifest.description.length > 132) {
   checks.push(`store description: ${manifest.description.length}/132 characters`);
 }
 const pkg = JSON.parse(read('package.json'));
-if (pkg.version !== manifest.version && manifest.version !== '0.1.0') {
-  problems.push(`package.json is ${pkg.version} and the manifest is ${manifest.version}`);
+// The `&& manifest.version !== '0.1.0'` that used to be on the end of this
+// condition is why the drift survived: the check existed, and then the one
+// value it needed to catch was whitelisted. scripts/build.js stamps the source
+// manifest now, so there is nothing left to exempt.
+if (pkg.version !== manifest.version) {
+  problems.push(`package.json is ${pkg.version} and extension/manifest.json is ${manifest.version} — run node scripts/build.js`);
+} else {
+  checks.push(`version: ${pkg.version} in package.json and the manifest`);
+}
+
+// ── claims about where data goes, which must name their subject ──────────
+//
+// "Nothing ever leaves your browser" is true of Chhanni and false about the
+// user's prompt, which goes to the AI provider the moment they send it. It is
+// the single most dangerous sentence this project can write, because it is the
+// one a reader cannot check, so it is checked here instead.
+const SUBJECTLESS = [
+  /nothing (?:you type|is|was) (?:ever )?(?:sent|transmitted)(?! to Chhanni)/i,
+  /never leaves your browser/i,
+  /nothing (?:ever )?leaves your (?:browser|machine|device)/i,
+  /nothing was sent anywhere/i,
+  /nothing is sent out/i,
+];
+const COPY_SURFACES = [
+  'extension/content.js', 'extension/options.html', 'extension/popup.html',
+  'PRIVACY.md', 'README.md', 'docs/PUBLISHING.md',
+];
+let subjectless = 0;
+for (const file of COPY_SURFACES) {
+  let text;
+  try { text = read(file); } catch { continue; }
+  for (const line of text.split('\n')) {
+    // The lines explaining *why* the claim is wrong are allowed to quote it.
+    if (/would be|used to|earlier draft|does not appear|instead of|rather than/i.test(line)) continue;
+    for (const re of SUBJECTLESS) {
+      if (re.test(line)) {
+        problems.push(`${file}: a claim about sending does not name its subject — ${line.trim().slice(0, 80)}`);
+        subjectless++;
+      }
+    }
+  }
+}
+if (!subjectless) checks.push('every claim about sending names Chhanni as its subject');
+
+// ── the permission count the UI states must be the one the manifest asks ──
+const stated = read('extension/options.html').match(/asks for (one|two|three) permissions?/);
+const WORDS = { one: 1, two: 2, three: 3 };
+if (stated && WORDS[stated[1]] !== manifest.permissions.length) {
+  problems.push(`options.html says the manifest asks for ${stated[1]} permission(s); it asks for ${manifest.permissions.length}`);
+} else if (stated) {
+  checks.push(`permissions: the options page and the manifest both say ${manifest.permissions.length}`);
 }
 
 // ── LIMITATIONS says how many sections it has, in several places ─────────

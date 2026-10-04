@@ -50,6 +50,21 @@ for (const file of readdirSync(join(root, 'src'))) {
   modules++;
 }
 
+// ── 1b. one source of truth for the version ──────────────────────────────
+//
+// package.json held 0.4.0 and extension/manifest.json held 0.1.0, because the
+// build stamped the copies in dist/ and never the original. That is survivable
+// right up until somebody zips `extension/` — which is the directory the
+// README tells you to load — and uploads a build the store reads as 0.1.0.
+// Stamping the source too means the two cannot disagree, and a test fails if
+// they ever do.
+const sourceManifestPath = join(root, 'extension', 'manifest.json');
+const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf8'));
+if (sourceManifest.version !== pkg.version) {
+  sourceManifest.version = pkg.version;
+  writeFileSync(sourceManifestPath, JSON.stringify(sourceManifest, null, 2) + '\n');
+}
+
 // ── 2. Chromium ──────────────────────────────────────────────────────────
 const chromeDir = join(root, 'dist', 'chrome');
 rmSync(chromeDir, { recursive: true, force: true });

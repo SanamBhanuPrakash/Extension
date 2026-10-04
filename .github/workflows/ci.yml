@@ -73,6 +73,29 @@ jobs:
       - name: Documentation still describes the code
         run: node scripts/check-docs.js --no-color
 
+      # The engine suite cannot prove the product works. Four separate ways
+      # past the guard shipped in 0.4.0 with 115 Node tests passing: clicking
+      # Send, submitting a form, pasting a screenshot, and a composer inside an
+      # iframe inside a shadow root. Each of those is a browser fact.
+      #
+      # Playwright is installed here and nowhere else, so `npm test` stays
+      # dependency-free and a contributor without it still gets a green run.
+      - name: Install a browser for the end-to-end suite
+        if: matrix.node == '22.x'
+        run: |
+          npm install --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: Content must not reach the provider
+        if: matrix.node == '22.x'
+        run: node test/e2e/run.mjs --no-color
+
+      - name: The package is reproducible
+        if: matrix.node == '22.x'
+        run: |
+          node scripts/package.js --no-color
+          node scripts/package.js --verify --no-color
+
       - name: Hostile input against the parsers
         run: node bench/fuzz.js --cases 20000 --no-color --quiet
 

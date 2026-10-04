@@ -687,8 +687,13 @@
       el('kbd', null, 'Esc'), document.createTextNode(' back to editing'));
     panel.appendChild(hint);
 
+    // Precise about the subject. Chhanni made no request; the prompt itself is
+    // still on its way to whichever provider this page belongs to the moment
+    // the person continues, and "nothing was sent anywhere" would be read as a
+    // claim about that. It is the one sentence on this surface that the reader
+    // has no way to check, so it has to be the one that is exactly true.
     panel.appendChild(el('div', 'chhanni-foot',
-      'Checked on this device. Nothing was sent anywhere.'));
+      'Checked on this device. Chhanni made no network request.'));
 
     document.body.appendChild(panel);
     requestAnimationFrame(() => panel?.classList.add('chhanni-in'));

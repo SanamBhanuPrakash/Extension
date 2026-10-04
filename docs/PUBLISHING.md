@@ -1,16 +1,45 @@
 # Publishing
 
-`node scripts/build.js` produces both packages. Neither needs a bundler, a
-build server, or a dependency install.
+Two commands, no bundler, no build server, no dependency install.
 
 ```console
 $ node scripts/build.js
-chhanni: dist/chrome   199 KB   (Chrome, Edge, Brave, Opera, Arc)
-chhanni: dist/firefox  199 KB   (Firefox, Firefox for Android)
+chhanni: 27 engine modules -> extension/engine/
+chhanni: dist/chrome   613 KB   (Chrome, Edge, Brave, Opera, Arc)
+chhanni: dist/firefox  613 KB   (Firefox, Firefox for Android)
 
-$ cd dist/chrome  && zip -r ../chhanni-chrome.zip  . -x ".*"
-$ cd dist/firefox && zip -r ../chhanni-firefox.zip . -x ".*"
+$ node scripts/package.js
+
+dist/chhanni-chrome-0.4.0.zip   43 files, 270 KB
+  sha256  6dc93a3caec30ac77730570a5dd5ea924da4199446311b29c9a3d7f2a0da5b11
+dist/chhanni-firefox-0.4.0.zip  43 files, 270 KB
+  sha256  945671d9dad25efd2362d38d688c34fe789c1d9fe1c845996e656a17764190cd
 ```
+
+**Upload those two files and nothing else.** Packaging used to be a `zip -r`
+printed at the end of the build and run by hand, which is the step where the
+wrong directory gets shipped. `scripts/package.js` refuses to run if `dist/`
+is a different version from `package.json` or has no `engine/` in it, and it
+deletes any older package sitting beside the current one — a stale
+`chhanni-chrome-0.3.0.zip` next to a 0.4.0 build is exactly how the wrong file
+reaches a store.
+
+### The digest is the point
+
+Entries are sorted, timestamps are fixed and compression is deterministic, so
+the same commit produces the same bytes. `node scripts/package.js --verify`
+rebuilds and fails if the digest moves. Publish the digest with the release
+tag: it is the only way a reviewer can check that what is on the store is what
+is in the repository, which for a tool that reads credentials is worth more
+than any sentence in a privacy policy.
+
+### Loading it unpacked
+
+`extension/` is the development tree, and `extension/engine/` is generated —
+it is not in the repository. A clone loaded before `node scripts/build.js` has
+run will install, show as enabled, report no error anywhere in Chrome's UI,
+and guard nothing. The content script detects that case and says so on the
+page rather than failing silently, but run the build first.
 
 ## What each store costs
 
@@ -76,11 +105,18 @@ answer to "where does this file come from" is always "`src/`".
 The store listing is where a five-second read is decided. Suggested short
 description, at the 132-character limit Chrome imposes:
 
-> Catches API keys, credentials and personal data in your prompts and
-> attachments before they leave your browser. Nothing is sent out.
+> Checks your prompts and attachments for credentials and personal data before
+> you send them. Chhanni itself sends nothing anywhere.
 
-Exactly 132 characters, and it is what `extension/manifest.json` carries, so
-the listing and the installed extension say the same thing.
+130 characters, and it is what `extension/manifest.json` carries, so the
+listing and the installed extension say the same thing.
+
+Note what the second sentence is about. An earlier draft said "Nothing is sent
+out", which is true of Chhanni and will be read as a claim about the user's
+prompt — and the prompt is sent out, to the AI service, which is the entire
+reason it was typed. Under the misleading-claims policy the test is whether
+the outcome matches the expectation the listing set. It has to be Chhanni that
+sends nothing, said in those words.
 
 ### The permission question, answered before it is asked
 
@@ -90,7 +126,7 @@ set is:
 
 | Permission | The answer |
 |---|---|
-| `storage` | Settings and a local detection history, both in the user's own profile. Nothing is transmitted. |
+| `storage` | Settings and a local detection history, both in the user's own profile. Chhanni transmits neither; it has no network permission. |
 | `scripting` | Used for exactly one thing: when the user presses "Watch this site too" in the popup, the extension registers its own content script on the one origin they just granted. It is never used to inject into a page the user has not asked for, and it grants no network access. |
 | Host permissions (23 AI sites) | To read the composer on those pages so a prompt can be checked before it is sent. |
 | `optional_host_permissions` | Requested per-origin, only on that button press, and revocable from the same popup. |

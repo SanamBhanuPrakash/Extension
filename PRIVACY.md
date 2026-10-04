@@ -5,8 +5,20 @@
 ## The short version
 
 Chhanni does not collect, transmit, sell or share any data. It has no server,
-no analytics, no crash reporting and no network permission. Nothing you type,
-paste or attach ever leaves your browser.
+no analytics, no crash reporting and no network permission. **Nothing you type,
+paste or attach is ever sent to Chhanni, its developer, or anyone else.**
+
+That sentence is about Chhanni, and the distinction matters enough to spell
+out. Your prompt *does* leave your browser — it goes to OpenAI, Anthropic,
+Google, Microsoft or whichever AI service you are using, the moment you send
+it, under that service's own privacy policy. That is the point of typing it,
+and Chhanni cannot change it. What Chhanni does is run in the moment before it
+happens and tell you what is in there.
+
+A tool that said "nothing ever leaves your browser" would be making a true
+claim about itself in words that will be read as a claim about your data. For
+a product whose only asset is being believed, that is not a trade worth
+making, so the sentence does not appear anywhere in this project.
 
 ## What it does
 
@@ -77,7 +89,7 @@ Two things, both in your own browser profile:
 |---|---|
 | `storage` | To remember your settings and your local detection history. |
 | `scripting` | So that, if you press **"Watch this site too"** in the popup, Chhanni can start checking a site it does not ship with — your company's own AI tool, for instance. It is used for nothing else, and it grants no network access. |
-| Host access to listed AI chat sites | To read the text in the composer *on that page only*, so it can be checked before you send it. The text is never transmitted. |
+| Host access to listed AI chat sites | To read the text in the composer *on that page only*, so it can be checked before you send it. Chhanni transmits none of it; the AI service still receives whatever you choose to send, as it always did. |
 | Optional host access to a site you add | Requested only when you press that button, for the one site you are on. You can revoke it from the same popup, or from your browser's extension settings. |
 
 There are no other permissions. In particular there is no `webRequest`, no

@@ -30,7 +30,7 @@ really about the gap between two of them.
 | **Detected** | Something in the text matched, and the panel named it | A detector that does not exist, a format with no pattern, a semantic leak with no shape. § 2, § 3 |
 | **Inspected** | The whole artifact was read, not just the part the format is named after | No OCR. A package part with no extractor. Rows past a cap. A closed shadow root. § 1, § 4, § 5 |
 | **Redacted** | Every detected value was actually replaced in what gets sent | A cap that binds. A container that cannot be rewritten. A value detected in a part that the rewrite does not cover. § 1, § 13 |
-| **Prevented** | It did not reach the provider | Never. "Send as-is" always works, and the submission paths a site can use are not all interceptable. § 15 |
+| **Prevented** | It did not reach the provider | "Send as-is" always works, by design. Enter, a click on the send control and a form submit are all held; a path that bypasses all three, or a closed shadow root, is not. § 15, § 16 |
 
 Each one is strictly weaker than the one above it, and the interesting bugs
 live in the joins:
@@ -46,6 +46,21 @@ live in the joins:
   phone numbers went out behind an accurate warning. Fixed, and the table
   result now carries `fullyRedactable` so the panel cannot promise what it
   will not deliver.
+- **Inspected, but not by every door.** For a while this said, correctly but
+  uselessly, that "the submission paths a site can use are not all
+  interceptable". What that sentence was covering was that clicking Send and
+  submitting a form were not watched at all — only Enter was, which is the path
+  a developer tests with and not the one most people use, and on a touch device
+  there is no Enter key. All three go through one function now, and
+  `test/e2e/` asserts on what a mock provider received rather than on whether a
+  panel appeared.
+- **Inspected, but not in that frame.** `all_frames` put the script in every
+  subframe and the shadow-DOM handling read composers inside open roots. The
+  two did not compose: the gate that holds a subframe until it contains
+  something editable used `querySelector`, which does not cross a shadow
+  boundary, so a composer inside an iframe inside a shadow root left that frame
+  unguarded for the life of the page, silently. Fixed, and there is a test with
+  a control.
 - **Redacted but not prevented.** Always true, by design. See § 16.
 
 When reading anything else in this document, or anything the panel says, the
@@ -266,6 +281,7 @@ handling depends on those libraries' behaviour continuing to be what it is.
 | Findings per scan | 2,000 | Past this the reader learns nothing further. |
 | Name/address pass | 800 KB | A larger paste gets credential and pattern scanning without the prose pass. |
 | Table rows | 20,000 processed | Rows past it are counted, so the disclosure is reported at its true size, but their values cannot be replaced. `fullyRedactable` goes false and the panel says so. |
+| Spreadsheet rows | 5,000 per `.xlsx` | The cap that actually binds on an attached spreadsheet, and it binds *below* the table layer. It used to be silent, and that was the worst bug in this document's history: a 50,000-row export came back `readable`, the panel said "5,000 records", `fullyRedactable` stayed true, and a "redacted copy" contained a tenth of the file. The row count travels with the text now, so the file reads `partial` and the panel names the rows nobody looked at. |
 | Table cell spans | 60,000 | Walked row by row, so a budget that binds truncates the table rather than dropping whole columns. |
 | Response window | 24,000 characters per pass | Scanned forward from the last mark rather than as a fixed tail, so a long reply cannot push an earlier one out unread — but a transcript growing faster than the debounce is read a pass behind. |
 | ZIP entry | 32 MB declared, 32 MB emitted, 96 MB per archive | The second is the one a decompression bomb runs into; the first is only what a header claims. |
@@ -502,6 +518,41 @@ reports.
 
 What does not scale: reading `src/rules.js` end to end. At some point the
 categories in `CATEGORIES` need to become files.
+
+---
+
+## 15b. Startup, and the states that are not "clean"
+
+For about two seconds after a page loaded, nothing was watching. Eight dynamic
+imports and two storage reads were awaited before the first listener went on —
+measured at 1,986 / 1,973 / 1,982 ms across three cold profiles, against 91–138
+ms on a warm one. Somebody who copies a key, opens the tab and pastes lands
+inside that window, and there was no sign of it.
+
+Listeners go on first now, and anything that would carry content out while the
+engine is still loading is held with a notice rather than passed. That is the
+same rule the rest of the product runs on, applied to its own startup: *not
+ready* is not *nothing found*.
+
+The same distinction produced a third outcome everywhere else:
+
+| | What it means |
+|---|---|
+| clean | inspected, nothing found — and it now says so, briefly |
+| finding | inspected, something found |
+| **could not inspect** | **no information at all: held, named, and overridable** |
+
+The third one did not exist. A scan that threw escaped the handler before
+`preventDefault()` ran, so the content went through and the person saw a
+perfectly ordinary paste. A malformed policy value — a scalar where an array
+belonged, which an administrator's GPO typo or a stale synced setting produces
+without any attacker — was enough to trigger it. Policy is coerced at the
+boundary so it does not throw, and if a scan throws anyway the action stops.
+
+What is still true: a failure early enough to stop the content script from
+running at all cannot be reported by the content script. If the engine does not
+load, the top frame says so on the page; if the script itself never starts,
+nothing can.
 
 ---
 

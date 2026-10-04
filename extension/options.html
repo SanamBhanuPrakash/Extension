@@ -88,7 +88,7 @@
     <img src="icons/icon-48.png" alt="">
     <h1>Chhanni <em>छन्नी — a sieve</em></h1>
   </header>
-  <p class="lede">Checks what you paste into an AI chat, on this device, before it leaves.</p>
+  <p class="lede">Checks what you paste into an AI chat, on this device, in the moment before it goes to the model.</p>
 
   <section class="glass managed" id="managedBanner" hidden>
     <h2>Managed by your organisation</h2>
@@ -137,9 +137,12 @@
   </section>
 
   <footer>
-    <strong>Chhanni makes no network request.</strong> The manifest asks for one permission,
-    <code>storage</code>, and that is for these settings. Your detection history stays in
+    <strong>Chhanni makes no network request.</strong> The manifest asks for two permissions:
+    <code>storage</code>, for these settings, and <code>scripting</code>, used only when you press
+    &ldquo;Watch this site too&rdquo;. Neither grants network access. Your detection history stays in
     <code>storage.local</code> on this profile, holds only masked previews, and is cleared from the toolbar popup.
+    When you continue, the AI service you are using receives your message under its own privacy policy &mdash;
+    that is what Chhanni is here to show you first.
   </footer>
 </div>
 <script type="module" src="options.js"></script>
