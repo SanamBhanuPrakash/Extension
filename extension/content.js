@@ -295,26 +295,49 @@
   }
 
   /**
-   * Approval bound to content, not to a clock.
+   * Approval bound to the exact thing that was approved.
    *
-   * "Send as-is" used to open a two-second window during which *any* Enter
-   * went through unchecked — measured: a completely different secret, typed
-   * and sent inside the window, left with no panel. An approval is a decision
-   * about one thing, so it is keyed to that thing and spent when it is used.
+   * "Send as-is" used to open a two-second window during which *any* Enter went
+   * through unchecked — measured: a completely different secret, typed and sent
+   * inside the window, left with no panel. So an approval became a decision
+   * about one specific thing, keyed to a 32-bit FNV-1a digest of it.
+   *
+   * That digest is gone. FNV-1a is a fast non-cryptographic hash with no
+   * collision resistance by design — on a page that is allowed to be hostile,
+   * a second input colliding with the approved one is something the page can
+   * solve for rather than search for, and the reward is one unscanned send.
+   * There is no reason to take that risk: the text is already in memory, so it
+   * is compared exactly. Identity for the composer, identity for each File,
+   * `===` for the string.
+   *
    * The short expiry is a backstop for a re-dispatch that never lands, not the
-   * mechanism.
+   * mechanism. One shot, then gone.
    */
   let approval = null;
-  function digest(value) {
-    const str = String(value);
-    let h = 0x811c9dc5;
-    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
-    return `${str.length}:${h.toString(16)}`;
+  const APPROVAL_MS = 4000;
+
+  function approveSend(via, text, target) {
+    approval = { kind: `send:${via}`, text, target, until: Date.now() + APPROVAL_MS };
   }
-  const approve = (key) => { approval = { key, until: Date.now() + 4000 }; };
-  function approved(key) {
-    if (!approval || approval.key !== key || Date.now() > approval.until) return false;
-    approval = null;                      // one shot, then gone
+  function approvedSend(via, text, target) {
+    const a = approval;
+    if (!a || a.kind !== `send:${via}` || Date.now() > a.until) return false;
+    if (a.target !== target || a.text !== text) return false;
+    approval = null;
+    return true;
+  }
+
+  function approveFiles(kind, files) {
+    approval = { kind, files: [...files], until: Date.now() + APPROVAL_MS };
+  }
+  function approvedFiles(kind, files) {
+    const a = approval;
+    if (!a || a.kind !== kind || Date.now() > a.until || !a.files) return false;
+    if (a.files.length !== files.length) return false;
+    // Object identity: these are the very File objects handed back, not a
+    // description of them that something else could reproduce.
+    for (let i = 0; i < files.length; i++) if (a.files[i] !== files[i]) return false;
+    approval = null;
     return true;
   }
 
@@ -911,8 +934,7 @@
     // room, and nobody was watching it.
     const pasted = [...(e.clipboardData?.files || [])];
     if (pasted.length) {
-      const key = digest(pasted.map((f) => `${f.name}:${f.size}:${f.type}`).join('|'));
-      if (approved(`paste-files:${key}`)) return;
+      if (approvedFiles('paste-files', pasted)) return;
       e.preventDefault();
       e.stopPropagation();
       guardFiles(pasted, {
@@ -922,7 +944,7 @@
           // replayed. Hand the files over as a drop, which every composer that
           // accepts a pasted image also accepts, and keep a one-shot approval
           // so that pressing Ctrl+V again works if this page does not.
-          approve(`paste-files:${key}`);
+          approveFiles('paste-files', allowed);
           try {
             target.dispatchEvent(new DragEvent('drop', {
               dataTransfer: fileListFrom(allowed), bubbles: true, cancelable: true,
@@ -1208,8 +1230,7 @@
     if (policy.mode === 'off') return;
     const files = [...(e.dataTransfer?.files || [])];
     if (!files.length) return;
-    const key = `drop:${digest(files.map((f) => `${f.name}:${f.size}`).join('|'))}`;
-    if (approved(key)) return;
+    if (approvedFiles('drop', files)) return;
 
     const target = eventTarget(e);
     e.preventDefault();
@@ -1217,7 +1238,7 @@
 
     guardFiles(files, {
       onAllow: (allowed) => {
-        approve(`drop:${digest(allowed.map((f) => `${f.name}:${f.size}`).join('|'))}`);
+        approveFiles('drop', allowed);
         target.dispatchEvent(new DragEvent('drop', {
           dataTransfer: fileListFrom(allowed), bubbles: true, cancelable: true,
         }));
@@ -1232,8 +1253,7 @@
     if (!(input instanceof HTMLInputElement) || input.type !== 'file') return;
     const files = [...(input.files || [])];
     if (!files.length) return;
-    const key = `pick:${digest(files.map((f) => `${f.name}:${f.size}`).join('|'))}`;
-    if (approved(key)) return;
+    if (approvedFiles('pick', files)) return;
 
     e.stopPropagation();
     // Detach the selection while we look at it, so nothing uploads underneath us.
@@ -1241,7 +1261,7 @@
 
     guardFiles(files, {
       onAllow: (allowed) => {
-        approve(`pick:${digest(allowed.map((f) => `${f.name}:${f.size}`).join('|'))}`);
+        approveFiles('pick', allowed);
         input.files = fileListFrom(allowed).files;
         input.dispatchEvent(new Event('change', { bubbles: true }));
       },
@@ -1277,8 +1297,7 @@
     // Bound to this text, on this path. "Send as-is" used to open a two-second
     // window in which any Enter went through unchecked — measured with a
     // completely different secret, which left with no panel.
-    const key = `send:${via}:${digest(text)}`;
-    if (approved(key)) return;
+    if (approvedSend(via, text, target)) return;
 
     const scanned = safeScan(text);
     if (!scanned.ok) {
@@ -1287,7 +1306,7 @@
       showCannotInspect({
         what: 'This message was held, not checked.',
         detail: `The scanner failed on it: ${String(scanned.err?.message || scanned.err).slice(0, 160)}`,
-        onProceed: () => { approve(key); resend(); },
+        onProceed: () => { approveSend(via, text, target); resend(); },
       });
       return;
     }
@@ -1308,7 +1327,7 @@
       sendText: text,
       onRedact: () => writeComposer(target, redact(text, result.findings).text),
       onPseudonymise: () => writeComposer(target, pseudonymise(text, result.findings).text),
-      onProceed: () => { approve(key); resend(); },
+      onProceed: () => { approveSend(via, text, target); resend(); },
     });
   }
 
