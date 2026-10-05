@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### The store package shipped a font and not its licence
+
+The extension bundles Inter instead of loading it from
+`fonts.googleapis.com`, because a webfont request would tell a third party —
+every time this UI opens — that somebody is being shown a warning. That is
+the right call and it has a condition attached. OFL-1.1, clause 2:
+
+> ...may be bundled, redistributed and/or sold with any software, **provided
+> that each copy contains the above copyright notice and this license**.
+
+Each copy. The store package is a copy, and it contained `inter.woff2`,
+`inter.css`, and no licence file of any kind. What stood in for one was a
+comment in the CSS saying Inter is OFL-licensed and a line in the README,
+neither of which is inside the ZIP. For a project whose whole argument is that
+a claim must be checkable, this was that argument pointed the wrong way: it
+redistributed somebody else's work on the strength of an unaccompanied
+assertion about their terms.
+
+`extension/fonts/LICENSE-Inter.txt` now carries the copyright notice and the
+full licence, fetched verbatim rather than reconstructed, and `check-docs`
+fails the build if a font ever sits in `extension/fonts/` without one beside
+it. Verified by removing it and watching the guard fire.
+
+And the two design questions that prompted the audit, answered in [decision
+39](docs/DECISIONS.md): Google Sans Flex **is** OFL-1.1 (confirmed in
+`google/fonts`, not from the coverage of its release, some of which says "no
+attribution required" and is wrong in exactly the way the bug above was
+wrong). It is still the wrong choice, and so is Material 3. Chhanni draws a
+panel on top of somebody else's product, and four of the twenty-three are
+Google's. A warning rendered in Google's typeface and design language, on top
+of Gemini, reads as something Google shipped — and the one thing this
+extension cannot be confused about is who is making the claim, because the
+whole product is a second opinion about what a provider is being sent. A
+second opinion that looks like it came from the provider is worth nothing.
+
+
 ### "Installed" was not "working", and nothing could tell you which
 
 The most dangerous belief a person can hold about this extension is *it is

@@ -884,3 +884,78 @@ the click, the Enter key, the form submit or a file attachment. And it proves
 nothing about the provider: *a mock recorded nothing* and *your real provider
 received nothing* are different claims, and TESTING.md § 2 is how to check the
 second by hand.
+
+---
+
+### 38. Ship the licence of the thing you redistribute
+
+**Context.** The extension bundles Inter rather than loading it from
+`fonts.googleapis.com`. That is the right call for a specific reason: a webfont
+request would tell a third party, every time this UI opens, that somebody is
+being shown a warning — and it would falsify the one promise the project
+makes, which is that nothing leaves the machine.
+
+**The bug.** Bundling has a condition attached, and it was not met. OFL-1.1,
+clause 2, verbatim:
+
+> Original or Modified Versions of the Font Software may be bundled,
+> redistributed and/or sold with any software, provided that each copy
+> contains the above copyright notice and this license.
+
+*Each copy.* The store package is a copy. It contained `fonts/inter.woff2`,
+`fonts/inter.css`, and no licence file of any kind — not Inter's, not the
+project's own. What stood in for it was a comment in the CSS saying "Inter is
+OFL-1.1 licensed, so redistributing it here is permitted", and a line in the
+README. Neither is inside the ZIP, and a comment asserting that a licence
+permits something is not the licence.
+
+For a project whose entire argument is that a claim has to be checkable, this
+was the argument pointed the wrong way: it shipped somebody else's work on the
+strength of an unaccompanied assertion about their terms.
+
+**Decision.** `extension/fonts/LICENSE-Inter.txt` holds the copyright notice
+and the full OFL-1.1 text, fetched verbatim from the Inter project rather than
+reconstructed, and `scripts/build.js` carries it into both packages. A check in
+`scripts/check-docs.js` fails the build if a `.woff2`, `.ttf` or `.otf` ever
+sits in `extension/fonts/` without a licence beside it carrying a copyright
+notice. Removing the file to see the guard fire is how it was verified.
+
+---
+
+### 39. Not Google Sans Flex, and not Material 3 — for the same reason
+
+**Context.** Both were raised as a design direction: adopt Material 3
+Expressive, and use Google Sans Flex as the typeface.
+
+**What is true about the licence.** Google Sans Flex *is* available —
+`google/fonts/ofl/googlesansflex/OFL.txt` carries "Copyright 2015 The Google
+Sans Flex Authors" under SIL OFL 1.1, confirmed at the repository rather than
+from the coverage of its release, some of which says "no attribution required"
+and is wrong in exactly the way decision 38 was wrong. So this is a design
+question, not a legal one.
+
+**Decision: keep Inter, and do not adopt Material 3.** The reason is not taste,
+and it is not inertia.
+
+Chhanni draws a panel on top of somebody else's product, and four of the
+twenty-three products it draws on are Google's — Gemini, AI Studio,
+NotebookLM, and Google's Copilot surfaces sit on that list. A warning rendered
+in Google's brand typeface, in Google's design language, on top of Gemini,
+reads as something Google shipped. It is not, and the one thing this extension
+cannot afford to be confused about is who is making the claim: the entire
+product is a second opinion about what a provider is being sent. A second
+opinion that looks like it came from the provider is worth nothing.
+
+The same argument runs the other way on ChatGPT and Claude, where Material 3
+would read as a Google surface pasted onto a competitor's page — which is
+noise at best and a trust problem at worst.
+
+What an overlay actually needs is to be legible on, and visually distinct
+from, every host it sits on. That is what the current treatment is for: a
+neutral glass panel, system-adjacent type, no vendor's visual signature. It
+should stay neutral as the hosts redesign around it.
+
+**Cost of being wrong.** If this is wrong, it is wrong in the direction of
+looking plainer than it could. That is recoverable. The other direction —
+shipping something that implies an affiliation nobody granted — is a
+trademark question and a trust failure at once, and it is not.

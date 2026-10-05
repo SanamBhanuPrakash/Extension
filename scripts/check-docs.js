@@ -226,6 +226,50 @@ if (!e2e) {
   else checks.push(`end-to-end cases: ${e2e}`);
 }
 
+// ── a bundled font ships its licence ─────────────────────────────────────
+//
+// The extension bundles Inter rather than loading it from
+// fonts.googleapis.com, because a webfont request would carry the fact that
+// somebody is being shown a warning to a third party and would falsify the
+// one promise this project makes. That is the right call and it has a
+// condition attached. OFL-1.1, clause 2, verbatim:
+//
+//   "Original or Modified Versions of the Font Software may be bundled,
+//    redistributed and/or sold with any software, provided that each copy
+//    contains the above copyright notice and this license."
+//
+// Each copy. The store package is a copy. It shipped the .woff2 with no
+// licence file in it at all — a CSS comment saying "Inter is OFL-1.1
+// licensed" is not the licence, and the README is not inside the ZIP. For a
+// project whose whole argument is that a claim must be checkable, shipping
+// somebody else's work on the strength of an unaccompanied assertion was the
+// wrong way round. This is the check that stops it coming back.
+{
+  let fonts = [];
+  try {
+    fonts = readdirSync(join(root, 'extension', 'fonts'))
+      .filter((f) => /\.(woff2?|ttf|otf)$/i.test(f));
+  } catch { /* no fonts directory */ }
+  for (const font of fonts) {
+    const licences = readdirSync(join(root, 'extension', 'fonts'))
+      .filter((f) => /^(LICENSE|LICENCE|OFL)/i.test(f));
+    if (!licences.length) {
+      problems.push(`extension/fonts/${font} is redistributed with no licence beside it `
+        + '— OFL-1.1 requires the copyright notice and the licence in every copy');
+      break;
+    }
+    const text = licences.map((f) => read(`extension/fonts/${f}`)).join('\n');
+    if (!/Copyright \(c\)/i.test(text)) {
+      problems.push(`extension/fonts/${licences[0]} carries no copyright notice`);
+    } else if (!/SIL OPEN FONT LICENSE|Apache License|MIT License/i.test(text)) {
+      problems.push(`extension/fonts/${licences[0]} does not contain a licence this check recognises`);
+    } else {
+      checks.push(`bundled fonts: ${fonts.length}, licence shipped beside them`);
+    }
+    break;
+  }
+}
+
 // ── every doc link resolves ──────────────────────────────────────────────
 for (const where of ['README.md', 'docs/LIMITATIONS.md', 'docs/BENCHMARK.md', 'docs/ARCHITECTURE.md',
   'docs/THREAT-MODEL.md', 'docs/ROADMAP.md', 'docs/DECISIONS.md', 'CHANGELOG.md', 'PRIVACY.md']) {
