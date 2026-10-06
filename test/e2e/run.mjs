@@ -967,6 +967,46 @@ await test('the self-test says so when the guard does not work', 'app-textarea.h
   t.equal(after.kind, 'bad', `a credential went through unchallenged and the card said: ${after.text}`);
 }, null);
 
+// ──────────────────────── protecting a value must not cost the formatting
+//
+// `writeComposer` selected the whole composer and typed a plain string over
+// it. For a textarea that is exactly right. For a rich composer it flattened
+// an AI prompt — code blocks, lists, links, bold runs, paragraphs — into one
+// line of plain text. The value was protected and the work was gone, and the
+// button that did it is labelled "Redact 1 and continue".
+
+await test('redacting a formatted prompt keeps the formatting', 'app-rich.html', async (p, t) => {
+  // The readiness probe types into the composer and clears it, so the
+  // structure is put back before anything is measured.
+  await p.evaluate(() => window.__reset());
+  const before = await p.evaluate(() => window.__shape());
+  t.ok(before.pre === 1 && before.li === 3 && before.href.length === 1,
+    `the fixture did not load with its structure: ${JSON.stringify(before)}`);
+
+  await p.locator('#ce').click();
+  await p.locator('#send').click();
+  t.ok(await waitPanel(p), 'a credential inside a code block raised no panel');
+  await p.locator('.chhanni-panel .chhanni-primary').click();
+  await p.waitForFunction(() => (window.__sent || []).length > 0, null, { timeout: 20000 })
+    .catch(() => {});
+
+  const got = await sent(p);
+  t.equal(got.length, 1, 'redact-and-continue did not send');
+  t.equal(got[0], 'click:clean', 'the key reached the provider');
+  t.ok(await sentHas(p, '<AWS_ACCESS_KEY_ID_1>'), 'the placeholder did not arrive');
+
+  const after = await p.evaluate(() => window.__shape());
+  t.equal(after.pre, before.pre, 'the code block was destroyed');
+  t.equal(after.code, before.code, 'the code element was destroyed');
+  t.equal(after.li, before.li, `the list went from ${before.li} items to ${after.li}`);
+  t.equal(after.p, before.p, 'the paragraphs were merged');
+  t.equal(after.strong, before.strong, 'the bold run was lost');
+  t.equal(after.em, before.em, 'the italic run was lost');
+  t.equal(JSON.stringify(after.href), JSON.stringify(before.href), 'the link lost its href');
+  t.ok(await sentHas(p, 'ninety seconds'), 'the surrounding text was lost');
+  t.ok(await sentHas(p, 'eu-west-1'), 'the rest of the code block was lost');
+}, '#ce');
+
 // ─────────────────────────── where a setting lives is a privacy question
 //
 // `chrome.storage.sync` is a network service: Chrome replicates it to every

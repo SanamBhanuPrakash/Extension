@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Protecting a value cost you the formatting
+
+`writeComposer` selected the whole composer and typed a plain string over it.
+Right for a textarea; destructive for a rich one. A real AI prompt is a
+question, a code block, a list of what you have tried, a link to a runbook, a
+bold phrase, a closing paragraph — and "Redact 1 and continue" flattened all
+of it. The value was protected and the work was gone.
+
+That needed a position map before it needed anything else. A finding's offsets
+point into the text that was scanned, and that text came from `innerText`,
+which collapses whitespace and invents line breaks from layout: character 412
+of it corresponds to no position in the DOM. `composerText()` now walks the
+text nodes, builds the string itself, and records where every character lives,
+so the text that gets scanned and the text that can be edited are the same
+text by construction.
+
+Each sensitive range is replaced where it sits — last span first, split per
+text node when it crosses one, still through `execCommand('insertText')` so
+ProseMirror and Quill hear the change and update their own models. A browser
+case asserts a prompt keeps its `pre`, its three `li`, its `href`, its
+`strong` and its `em`, and that the key is gone.
+
+One thing got stricter rather than better, and it is worth knowing: because
+reading a composer now reconstructs block structure, the old whole-composer
+write no longer produces the intended text, so on a rich composer it fails the
+verify step and the send is refused. Flattening your prompt is a change you
+did not ask for, and refusing while saying so beats doing it quietly — but it
+means a rich composer where in-place replacement cannot work has no
+redact-and-send path, only "remove it yourself" or "send as-is". The panel
+tells the three failure modes apart instead of blaming the editor every time.
+
+
 ### The allowlist was going through Google's servers
 
 `chrome.storage.sync` is convenient and it is also a network service: Chrome

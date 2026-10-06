@@ -646,7 +646,55 @@
     } catch { /* fall through */ }
     return e.target;
   };
-  const readComposer = (el) => (el.tagName === 'TEXTAREA' ? el.value : el.innerText);
+  /**
+   * The composer's text, and where every character of it lives.
+   *
+   * `innerText` was enough while the only thing done with the text was to
+   * scan it and then replace the whole composer. It is not enough to replace
+   * *part* of it, which is what a rich composer needs: `innerText` collapses
+   * whitespace and synthesises line breaks from layout, so an offset in it
+   * does not correspond to any position in the DOM. A finding at character
+   * 412 of `innerText` cannot be turned back into a range.
+   *
+   * So the text is built here instead, by walking the text nodes in order and
+   * recording the span each one occupies. The result is the same shape a
+   * person sees — a newline where a block ends, one for a `<br>` — and every
+   * offset in it maps back to an exact (node, offset) pair.
+   *
+   * The tag list rather than `getComputedStyle`: this runs on every send, on
+   * somebody else's DOM, and a computed style per node is a layout read per
+   * node. These are the elements a composer actually produces.
+   */
+  const BLOCKISH = new Set(['P', 'DIV', 'LI', 'UL', 'OL', 'PRE', 'BLOCKQUOTE', 'SECTION',
+    'ARTICLE', 'TABLE', 'TR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'FIGURE', 'HR']);
+
+  function composerText(el) {
+    let text = '';
+    const segments = [];
+    const walk = (node) => {
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) {
+          const data = child.data || '';
+          if (!data) continue;
+          segments.push({ node: child, at: text.length, length: data.length });
+          text += data;
+          continue;
+        }
+        if (child.nodeType !== 1) continue;
+        if (child.tagName === 'BR') { text += '\n'; continue; }
+        // Chhanni's own UI is never part of the message.
+        if (child.classList?.contains('chhanni-panel')) continue;
+        const block = BLOCKISH.has(child.tagName);
+        if (block && text && !text.endsWith('\n')) text += '\n';
+        walk(child);
+        if (block && text && !text.endsWith('\n')) text += '\n';
+      }
+    };
+    try { walk(el); } catch { return { text: el.innerText || '', segments: [] }; }
+    return { text, segments };
+  }
+
+  const readComposer = (el) => (el.tagName === 'TEXTAREA' ? el.value : composerText(el).text);
 
   /**
    * These composers are React- or ProseMirror-controlled. Assigning .value or
@@ -670,6 +718,72 @@
     sel.removeAllRanges();
     sel.addRange(range);
     document.execCommand('insertText', false, value);
+  }
+
+  /**
+   * Replace only the sensitive spans, and leave the rest of the composer alone.
+   *
+   * `writeComposer` selects the whole composer and types a plain string over
+   * it. For a textarea that is exactly right. For a rich composer it is
+   * destructive in a way nobody asked for: an AI prompt is full of code
+   * blocks, lists, links, bold runs, tables and several paragraphs, and
+   * pressing a button labelled "Redact 1 and continue" should not flatten a
+   * carefully formatted question into one line of plain text. The value is
+   * protected and the work is gone.
+   *
+   * So each span is replaced where it sits. A replacement that crosses a
+   * boundary between text nodes is split and applied per node — the
+   * placeholder goes into the first, the rest are emptied — because joining
+   * two text nodes across a block boundary would merge the paragraphs, which
+   * is the same destruction in miniature.
+   *
+   * Applied last-span-first so the offsets of the earlier ones are still
+   * valid as the DOM changes underneath.
+   *
+   * Still through `execCommand('insertText')` with a selection, not by
+   * assigning `data`: ProseMirror and Quill read the DOM back on `input` and
+   * update their own model, and a write they never hear about is reverted on
+   * the next keystroke. The selection is the narrow range rather than the
+   * whole composer; that is the entire difference.
+   *
+   * @returns {boolean} false when the spans could not be mapped, so the caller
+   *   can fall back rather than assume this worked.
+   */
+  function replaceSpans(el, spans) {
+    const { segments } = composerText(el);
+    if (!segments.length || !spans.length) return false;
+    const sel = window.getSelection();
+    if (!sel) return false;
+    el.focus();
+
+    const ordered = [...spans].sort((a, b) => b.start - a.start);
+    for (const span of ordered) {
+      // Every text node this span touches, in order.
+      const touched = segments
+        .filter((seg) => span.start < seg.at + seg.length && seg.at < span.end)
+        .sort((a, b) => a.at - b.at);
+      if (!touched.length) return false;
+
+      // Last to first within the span too, for the same reason.
+      for (let i = touched.length - 1; i >= 0; i--) {
+        const seg = touched[i];
+        const from = Math.max(span.start, seg.at) - seg.at;
+        const to = Math.min(span.end, seg.at + seg.length) - seg.at;
+        if (to <= from) continue;
+        const range = document.createRange();
+        try {
+          range.setStart(seg.node, from);
+          range.setEnd(seg.node, to);
+        } catch { return false; }
+        sel.removeAllRanges();
+        sel.addRange(range);
+        // The placeholder lands in the first node the span touches; the
+        // others lose their part of the value and keep their element.
+        document.execCommand('insertText', false, i === 0 ? span.value : '');
+      }
+    }
+    sel.removeAllRanges();
+    return true;
   }
 
   /** Rule ids whose value has a shape worth preserving as an alias. */
@@ -1803,7 +1917,8 @@
       // within the visible part, and drop the markup entirely when the only
       // problem was in an attribute — pasting the plain text is the fix.
       onRedact: () => insert(redact(text, result.findings.filter((f) => f.end <= text.length)).text),
-      onPseudonymise: () => insert(pseudonymise(text, result.findings.filter((f) => f.end <= text.length)).text),
+      onPseudonymise: () => insert(
+        pseudonymise(text, result.findings.filter((f) => f.end <= text.length)).text),
       onProceed: () => insert(text),
     });
   }, true);
@@ -2145,8 +2260,14 @@
      * disagrees, the send does not happen and the panel says why.
      */
     const transformAndSend = (transform, what) => {
-      const wanted = transform();
-      writeComposer(target, wanted);
+      const plan = transform();
+      // In place where that is possible, so a formatted prompt survives being
+      // protected; whole-composer otherwise. Either way the read-back below
+      // is what decides whether it worked, which is why trying the careful
+      // path first costs nothing.
+      const inPlace = target.tagName !== 'TEXTAREA' && replaceSpans(target, plan.spans);
+      if (!inPlace) writeComposer(target, plan.text);
+      const wanted = plan.text;
 
       // Read back through the same accessor the send path uses, so this
       // checks what would actually be transmitted rather than what we think
@@ -2156,13 +2277,20 @@
       const stillThere = recheck.ok && stopsSend(recheck.result);
 
       if (got !== wanted || stillThere) {
+        // Three different things go wrong here and they are not the same news.
+        const detail = stillThere
+          ? 'The change did not remove everything that stopped the send. '
+            + 'Edit the message yourself before sending.'
+          : !inPlace && target.tagName !== 'TEXTAREA'
+            ? 'Chhanni could not edit this message box in place, and replacing it '
+              + 'wholesale would have flattened the formatting — code blocks, lists, '
+              + 'links. Your message is untouched. Remove the value yourself, or send '
+              + 'as-is if you meant to.'
+            : 'The message box did not accept the change — this editor may have '
+              + 'reverted it. Edit the message yourself before sending.';
         showCannotInspect({
           what: `Chhanni could not ${what} this safely, so it did not send.`,
-          detail: got !== wanted
-            ? 'The message box did not accept the change — this editor may have '
-              + 'reverted it. Edit the message yourself before sending.'
-            : 'The change did not remove everything that stopped the send. '
-              + 'Edit the message yourself before sending.',
+          detail,
           onProceed: () => { approveSend(via, readComposer(target), target); resend(); },
         });
         return;
@@ -2177,9 +2305,9 @@
       coverage: scanCoverage(result, 'This message'),
       destination: location.hostname,
       sendText: text,
-      onRedact: () => transformAndSend(() => redact(text, result.findings).text, 'redact'),
+      onRedact: () => transformAndSend(() => redact(text, result.findings), 'redact'),
       onPseudonymise: () => transformAndSend(
-        () => pseudonymise(text, result.findings).text, 'replace the names in'),
+        () => pseudonymise(text, result.findings), 'replace the names in'),
       onProceed: () => { approveSend(via, text, target); resend(); },
     });
   }

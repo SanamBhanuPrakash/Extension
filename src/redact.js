@@ -100,16 +100,23 @@ function replaceAll(text, findings, name) {
   // a span that starts inside the previous one is skipped rather than allowed
   // to corrupt the output. First wins, in reading order.
   const pieces = [];
+  // The same replacements as spans into the *original* text, for a caller
+  // that is editing in place rather than taking a new string. A rich composer
+  // needs these: replacing the whole thing with `text` would protect the
+  // value and flatten the code blocks, lists and paragraphs around it.
+  const spans = [];
   let at = 0;
   let changed = 0;
   for (const f of [...list].sort((a, b) => a.start - b.start)) {
     if (f.start < at || f.start > text.length) continue;
-    pieces.push(text.slice(at, f.start), assigned.get(f.match));
+    const value = assigned.get(f.match);
+    pieces.push(text.slice(at, f.start), value);
+    spans.push({ start: f.start, end: f.end, value, ruleId: f.ruleId });
     at = f.end;
     changed++;
   }
   pieces.push(text.slice(at));
-  return { text: pieces.join(''), map, table, changed };
+  return { text: pieces.join(''), map, table, changed, spans };
 }
 
 /**
@@ -118,8 +125,13 @@ function replaceAll(text, findings, name) {
  *   reversal table is returned separately by `redactReversible`.
  */
 export function redact(text, findings) {
-  const { text: out, map, changed } = replaceAll(text, findings, tokenName);
-  return { text: out, map, changed };
+  // `table` is deliberately not returned: it maps each placeholder back to
+  // the real secret, and a caller that does not need it should not be handed
+  // it. `spans` is safe to pass on — it carries the placeholder and the range
+  // it covers, never the value — and a caller editing a rich composer in
+  // place needs the ranges rather than a new string.
+  const { text: out, map, changed, spans } = replaceAll(text, findings, tokenName);
+  return { text: out, map, changed, spans };
 }
 
 /**

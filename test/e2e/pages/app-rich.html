@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>a composer with structure in it</title>
+<!--
+  What an AI prompt actually looks like.
+
+  Every other contenteditable fixture here holds one line of plain text, which
+  is why replacing the whole composer with a plain string looked harmless. A
+  real prompt is code blocks, lists, links, bold runs and several paragraphs,
+  and "Redact 1 and continue" should not flatten a carefully formatted
+  question into one line. The value would be protected and the work gone.
+
+  This composer transmits its innerHTML as well as its text, so a test can
+  assert that the structure came through and not only that the secret did not.
+-->
+<style>
+  body { font: 14px system-ui; margin: 0; padding: 20px; }
+  #ce { min-height: 180px; border: 1px solid #ccc; border-radius: 8px; padding: 12px; max-width: 760px; }
+  #ce pre { background: #0d1117; color: #c9d1d9; padding: 10px; border-radius: 6px; overflow: auto; }
+  .bar { margin-top: 12px; }
+</style>
+
+<div id="ce" contenteditable="true"><p>Here is the deploy script that keeps failing. Can you see <strong>why the worker exits</strong>?</p><pre><code>export AWS_ACCESS_KEY_ID=__CREDENTIAL__
+export AWS_REGION=eu-west-1
+node worker.js</code></pre><ul><li>it runs fine locally</li><li>it dies after about <em>ninety seconds</em> in staging</li><li>the <a href="https://runbook.example.com/worker">runbook</a> says to check the replica lag</li></ul><p>The last thing in the log is a timeout on the writer.</p></div>
+
+<div class="bar"><button type="button" id="send" aria-label="Send message">Send</button></div>
+
+<script>
+  window.__sent = [];
+  const ce = document.getElementById('ce');
+  // The readiness probe pastes into the composer and clears it again, which
+  // is right for every other fixture and would wipe the structure this one
+  // exists to protect. The test restores it once the extension is live.
+  const ORIGINAL = ce.innerHTML;
+  window.__reset = () => { ce.innerHTML = ORIGINAL; };
+  // Both, so a test can tell "the secret left" from "the formatting left".
+  document.getElementById('send').addEventListener('click', () => {
+    window.__sent.push({ how: 'click', text: ce.innerText, html: ce.innerHTML });
+  });
+  window.__shape = () => ({
+    pre: ce.querySelectorAll('pre').length,
+    code: ce.querySelectorAll('code').length,
+    li: ce.querySelectorAll('li').length,
+    p: ce.querySelectorAll('p').length,
+    strong: ce.querySelectorAll('strong').length,
+    em: ce.querySelectorAll('em').length,
+    href: [...ce.querySelectorAll('a')].map((a) => a.getAttribute('href')),
+  });
+</script>

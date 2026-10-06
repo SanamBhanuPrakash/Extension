@@ -1066,3 +1066,56 @@ it would have failed before this.
 `low` still does not stop a send in warn mode, and that is deliberate: a lone
 email address is a `low` finding, and interrupting a send over one would make
 the mode most people leave on unusable.
+
+---
+
+### 43. Protecting a value must not cost the formatting
+
+**Context.** `writeComposer` selected the whole composer and typed a plain
+string over it. For a textarea that is exactly right and nothing else would
+work. For a rich composer it was destructive in a way nobody asked for.
+
+A real AI prompt is not one line of plain text. It is a question, a code block,
+a bulleted list of what has been tried, a link to a runbook, a bold phrase, a
+closing paragraph. Pressing a button labelled "Redact 1 and continue" flattened
+all of it. The value was protected and the work was gone.
+
+**Why this needed a position map first.** The offsets a finding carries are
+offsets into the text that was scanned, and that text came from `innerText` —
+which collapses whitespace and synthesises line breaks from layout. An offset
+in `innerText` does not correspond to any position in the DOM, so character
+412 of it cannot be turned back into a range. Replacing part of a composer is
+impossible until reading it produces a map as well as a string.
+
+So `composerText()` walks the text nodes in order, builds the string itself
+with a newline where a block ends, and records the span each node occupies.
+`readComposer` uses it, which means the text that is scanned and the text that
+can be edited are the same text by construction rather than by coincidence.
+
+**Decision.** `replaceSpans()` replaces each sensitive range where it sits,
+last span first so earlier offsets stay valid. A span that crosses a boundary
+between text nodes is split and applied per node — the placeholder into the
+first, the rest emptied — because joining two text nodes across a block
+boundary merges the paragraphs, which is the same destruction in miniature.
+
+Still through `execCommand('insertText')` with a selection, not by assigning
+`data`: ProseMirror and Quill read the DOM back on `input` and update their own
+model, and a write they never hear about is reverted on the next keystroke. The
+selection is the narrow range instead of the whole composer. That is the entire
+difference.
+
+**What got stricter, which is worth stating plainly.** Because `readComposer`
+now reconstructs block structure, the old whole-composer write produces text
+that no longer matches what was intended — so on a rich composer the fallback
+path fails the verify step from decision 41 and the send is refused. That is
+the right outcome: flattening somebody's prompt is a change they did not ask
+for, and refusing while saying so beats doing it quietly. But it means a rich
+composer where span replacement cannot work has no redact-and-send path at
+all, only "remove it yourself" or "send as-is". The panel says which of the
+three things went wrong rather than blaming the editor in every case.
+
+**Still not done.** Pseudonymisation of a *textarea* goes through the
+whole-string path, which is correct there. Attachment rewriting is untouched.
+And a provider that keeps its text in a model the DOM does not reflect at all
+would defeat the map as surely as it defeats everything else — which is what
+`test/provider/run.mjs` exists to find out.
