@@ -464,3 +464,34 @@
   .chhanni-selftest { border: 1px solid CanvasText; background: Canvas; color: CanvasText; forced-color-adjust: none; }
   .chhanni-selftest-copy { border: 1px solid ButtonText; }
 }
+
+/* ───────────────────────────── the outbound text, not a description of it
+ *
+ * Monospace and wrapped, because this is the payload rather than prose, and a
+ * placeholder has to be findable in it at a glance. The token is marked; the
+ * surrounding text is the person's own, which they wrote and can recognise.
+ * Nothing here can carry a secret: every value that made this panel appear has
+ * already been replaced in the string being shown.
+ */
+.chhanni-preview {
+  margin: 8px 0 0; padding: 8px 9px; border-radius: 9px;
+  background: var(--c-inset, rgba(255, 255, 255, .6));
+  border: 0.5px solid var(--c-hairline);
+  font: 400 11px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--c-muted);
+  max-height: 128px; overflow-y: auto; overflow-wrap: anywhere;
+}
+.chhanni-preview-line + .chhanni-preview-line { margin-top: 5px; }
+.chhanni-preview-token {
+  background: rgba(26, 127, 75, .14); color: #126b3d;
+  border-radius: 4px; padding: 1px 3px; font-weight: 510;
+}
+.chhanni-preview-more { margin-top: 5px; color: var(--c-faint); font-style: italic; }
+@media (prefers-color-scheme: dark) {
+  .chhanni-preview { background: rgba(255, 255, 255, .05); }
+  .chhanni-preview-token { background: rgba(94, 214, 155, .18); color: #7fe0ab; }
+}
+@media (forced-colors: active) {
+  .chhanni-preview { border: 1px solid CanvasText; }
+  .chhanni-preview-token { border: 1px solid CanvasText; forced-color-adjust: none; }
+}

@@ -967,6 +967,38 @@ await test('the self-test says so when the guard does not work', 'app-textarea.h
   t.equal(after.kind, 'bad', `a credential went through unchallenged and the card said: ${after.text}`);
 }, null);
 
+// ──────────────────────────── the preview has to be the payload
+//
+// The heading says "what <host> will receive". Under it used to sit a count
+// worked out as `sendText.length - sum(span lengths)` — an estimate dressed as
+// a fact, which ignores that a placeholder is a different length from the
+// value it replaces, that spans can overlap, and that an encoded finding's
+// span covers the whole encoded run. A heading like that has to be answered
+// with the thing itself.
+
+await test('the panel shows the text that will actually be sent', 'app-textarea.html', async (p, t) => {
+  await p.locator('#prompt-textarea').fill(
+    `Connect with AWS_ACCESS_KEY_ID=${KEY} and then restart the worker please`);
+  await p.locator('#send').click();
+  t.ok(await waitPanel(p), 'no panel for a typed credential');
+
+  const shown = await p.evaluate(() => {
+    const el = document.querySelector('.chhanni-preview');
+    return el ? el.innerText : null;
+  });
+  t.ok(shown, 'the panel showed no preview of the outbound text at all');
+  t.ok(shown.includes('<AWS_ACCESS_KEY_ID_1>'), `the placeholder is not in the preview: ${JSON.stringify(shown)}`);
+  t.ok(!shown.includes(KEY), 'the preview printed the secret it is supposed to have replaced');
+  t.ok(shown.includes('restart the worker'), 'the preview showed no surrounding context');
+
+  // And the claim the preview makes has to be the claim the button keeps.
+  await p.locator('.chhanni-panel .chhanni-primary').click();
+  await p.waitForFunction(() => (window.__sent || []).length > 0, null, { timeout: 20000 })
+    .catch(() => {});
+  t.ok(await sentHas(p, '<AWS_ACCESS_KEY_ID_1>'),
+    'the preview showed a placeholder the send did not use');
+});
+
 // ──────────────────────── protecting a value must not cost the formatting
 //
 // `writeComposer` selected the whole composer and typed a plain string over

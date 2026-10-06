@@ -786,6 +786,48 @@
     return true;
   }
 
+  /**
+   * Excerpts of the transformed text, around each placeholder.
+   *
+   * Takes the plan `redact()` produced — the one the button will send — and
+   * finds where each replacement ended up in the *output*, which is not where
+   * it was in the input: a placeholder is a different length from the value it
+   * replaced, so every span after the first is shifted by the running
+   * difference. Getting that wrong is how a preview becomes a lie that looks
+   * precise.
+   *
+   * A window either side rather than the whole message, because a prompt can
+   * be thousands of characters and the question being answered is "what
+   * happened to my secret", not "show me my own message back".
+   */
+  const PREVIEW_WINDOW = 46;
+  const PREVIEW_MAX = 3;
+
+  function buildPreview(plan) {
+    if (!plan || typeof plan.text !== 'string') return null;
+    const spans = plan.spans || [];
+    const out = { text: plan.text, changed: plan.changed || 0, excerpts: [], more: 0 };
+    let shift = 0;
+    const placed = [];
+    for (const span of [...spans].sort((a, b) => a.start - b.start)) {
+      const at = span.start + shift;
+      placed.push({ at, length: span.value.length, token: span.value });
+      shift += span.value.length - (span.end - span.start);
+    }
+    for (const hit of placed.slice(0, PREVIEW_MAX)) {
+      const before = plan.text.slice(Math.max(0, hit.at - PREVIEW_WINDOW), hit.at);
+      const after = plan.text.slice(hit.at + hit.length, hit.at + hit.length + PREVIEW_WINDOW);
+      const tidy = (x) => x.replace(/\s+/g, ' ');
+      out.excerpts.push({
+        before: (hit.at > PREVIEW_WINDOW ? '\u2026' : '') + tidy(before),
+        token: hit.token,
+        after: tidy(after) + (hit.at + hit.length + PREVIEW_WINDOW < plan.text.length ? '\u2026' : ''),
+      });
+    }
+    out.more = Math.max(0, placed.length - PREVIEW_MAX);
+    return out;
+  }
+
   /** Rule ids whose value has a shape worth preserving as an alias. */
   const ALIASABLE = new Set(['person_name', 'postal_address', 'email', 'phone_india']);
 
@@ -857,7 +899,8 @@
    * whoever wants it.
    */
   function showPanel({ result, title, onRedact, onProceed, onDismiss, onPseudonymise,
-                       redactLabel, proceedLabel, coverage, plan, destination, sendText }) {
+                       redactLabel, proceedLabel, coverage, plan, destination, sendText,
+                       preview }) {
     closePanel();
     const { risk, band, table, groups, findings, regimeNames } = result;
     const verdict = result.verdict;
@@ -989,15 +1032,52 @@
         lines.appendChild(el('li', null,
           `${advisory} thing${advisory === 1 ? '' : 's'} marked “context” stay as written`));
       }
-      if (typeof sendText === 'string') {
-        const kept = Math.max(0, sendText.length - findings.filter((f) => !f.advisory)
-          .reduce((n, f) => n + (f.end - f.start), 0));
-        lines.appendChild(el('li', null, `${kept.toLocaleString()} characters of your message, unchanged`));
+      if (preview && typeof preview.text === 'string') {
+        lines.appendChild(el('li', null,
+          `${preview.text.length.toLocaleString()} characters in total, of which `
+          + `${preview.changed} ${preview.changed === 1 ? 'is a placeholder' : 'are placeholders'}`));
+      } else if (typeof sendText === 'string') {
+        lines.appendChild(el('li', null, `${sendText.length.toLocaleString()} characters`));
       }
       for (const line of (coverage || []).slice(0, 2)) {
         lines.appendChild(el('li', 'chhanni-receive-gap', `Not inspected — ${line}`));
       }
       recv.appendChild(lines);
+
+      /**
+       * The outbound text itself, not a description of it.
+       *
+       * This heading used to sit above a count worked out as
+       * `sendText.length - sum(span lengths)`, which is an estimate dressed
+       * as a fact: it ignores that a placeholder is a different length from
+       * the value it replaces, that two findings can overlap, that an
+       * encoded finding's span covers the whole encoded run, that a rich
+       * composer serialises differently from what was scanned. A heading
+       * that says "what ChatGPT will receive" has to be answered with the
+       * thing, and the thing is available — `redact()` already computed it
+       * in order for the button to work.
+       *
+       * So the panel renders excerpts of the actual transformed text, with
+       * the placeholders marked, from **the same object the button sends**.
+       * Not a recomputation that ought to agree: the same object. Showing
+       * the outbound text is safe by construction, because every value that
+       * made this panel appear has already been replaced in it.
+       */
+      if (preview && preview.excerpts?.length) {
+        const shown = el('div', 'chhanni-preview');
+        for (const part of preview.excerpts) {
+          const line = el('div', 'chhanni-preview-line');
+          if (part.before) line.appendChild(el('span', null, part.before));
+          line.appendChild(el('mark', 'chhanni-preview-token', part.token));
+          if (part.after) line.appendChild(el('span', null, part.after));
+          shown.appendChild(line);
+        }
+        if (preview.more > 0) {
+          shown.appendChild(el('div', 'chhanni-preview-more',
+            `and ${preview.more} more ${preview.more === 1 ? 'replacement' : 'replacements'}`));
+        }
+        recv.appendChild(shown);
+      }
       panel.appendChild(recv);
     }
 
@@ -2259,8 +2339,20 @@
      * the finding that stopped us. Only then replay. If the read-back
      * disagrees, the send does not happen and the panel says why.
      */
-    const transformAndSend = (transform, what) => {
-      const plan = transform();
+    /**
+     * Computed once, here, and used for both the preview and the send.
+     *
+     * Not recomputed inside the handler. `redact()` is deterministic, so a
+     * second call would return an equal object — but "equal because the
+     * function is pure" is a weaker guarantee than "the same object", and the
+     * whole point of the preview is that it is not a separate estimate of
+     * what will happen. If these ever diverge it should be impossible rather
+     * than unlikely.
+     */
+    const redactPlan = redact(text, result.findings);
+    const aliasPlan = pseudonymise(text, result.findings);
+
+    const transformAndSend = (plan, what) => {
       // In place where that is possible, so a formatted prompt survives being
       // protected; whole-composer otherwise. Either way the read-back below
       // is what decides whether it worked, which is why trying the careful
@@ -2305,9 +2397,9 @@
       coverage: scanCoverage(result, 'This message'),
       destination: location.hostname,
       sendText: text,
-      onRedact: () => transformAndSend(() => redact(text, result.findings), 'redact'),
-      onPseudonymise: () => transformAndSend(
-        () => pseudonymise(text, result.findings), 'replace the names in'),
+      preview: buildPreview(redactPlan),
+      onRedact: () => transformAndSend(redactPlan, 'redact'),
+      onPseudonymise: () => transformAndSend(aliasPlan, 'replace the names in'),
       onProceed: () => { approveSend(via, text, target); resend(); },
     });
   }
