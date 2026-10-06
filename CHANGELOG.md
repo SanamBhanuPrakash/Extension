@@ -2,6 +2,84 @@
 
 ## Unreleased
 
+### The allowlist was going through Google's servers
+
+`chrome.storage.sync` is convenient and it is also a network service: Chrome
+replicates it to every browser the person is signed into. The options page
+wrote the whole policy there, and the policy contains the **allowlist** — the
+one field made entirely of strings somebody typed *because they are
+sensitive*. "Never treat this as a finding" is how you tell Chhanni about a
+customer's email address, an internal codename, a shared test credential, a
+project whose name is not public.
+
+The claim was never false about Chhanni's own behaviour. There is no `fetch`
+in this codebase, no network permission in the manifest, and CI fails the
+build if a shipped module references a network API. It was false about the
+**outcome**, which is the only thing anybody cares about, and "our code makes
+no request" is not an answer to "does my customer's address leave this
+laptop". A privacy product answering the second question with the first is
+doing the thing it exists to stop.
+
+Settings are split by what they reveal now. The interruption level and which
+detectors are off still sync — they say how cautious you are, nothing about
+what you work on. The allowlist is local and never leaves the profile. A
+profile that already synced one is migrated on first read: the values move to
+local storage and **the synced copy is deleted**, because reading from
+somewhere else would have fixed the behaviour and left the exposure. The
+options page says it happened instead of fixing it quietly.
+
+Two browser cases assert this against the storage areas directly, and both
+fail when the split is reverted.
+
+### A typed credential could send in silence
+
+`scanPolicy()` put every severity but `critical` into the warn set.
+`guardSubmission()` returned early in warn mode on any verdict that was not
+`block`. Neither line is wrong alone; composed, they were a hole:
+
+    pasted Google API key     panel appears
+    typed Google API key      sends, in silence
+
+`high` is twenty-five detectors — a Slack webhook, a SendGrid key, a Twilio
+key, a Notion token, an IBAN. LIMITATIONS § 15c has listed `high` in warn mode
+as "panel, send stopped" since 0.4.0: the table was the specification, it was
+right, and the code did not implement it.
+
+The asymmetry is the part that matters. People do not only paste secrets, they
+type them, and the weaker path was the one nobody would have noticed. The
+three modes are now one table that both paths read, and a browser case asserts
+the two paths *agree* whatever the mode decides.
+
+### "Redact and continue" did not continue
+
+The panel's primary button on a send interception says "Redact 2 and
+continue". It wrote the redacted text into the composer and stopped, leaving
+the person to press Send again.
+
+It is one action now — transform, verify, send — and the middle step is the
+point. Writing to a composer is a negotiation with somebody else's editor, and
+if a provider changes theirs the write can silently fail to take. Replaying
+the send on the strength of a write that did not land would transmit the
+original secret while the panel said it had been redacted, which is worse than
+doing nothing. So the composer is read back through the same accessor the send
+path uses, a fresh scan has to agree the finding is gone, and only then does
+the send replay. A browser case covers it with a fixture whose editor is
+instrumented to refuse the write.
+
+### What the provider actually received
+
+`test/provider/run.mjs` drives ChatGPT, Claude, Gemini, Copilot and Perplexity
+in your own signed-in profile and asserts on **the request body the provider's
+own code sent**, read from the network — not on whether a panel appeared. It
+cannot run in CI: it needs accounts, a browser with a display, and it sends
+messages to a paid service.
+
+Two of the ten paths are driven today. The other eight say `not tested`, and
+so does every row for a provider whose composer selector no longer matches or
+whose account is not signed in — with a non-zero exit rather than a green
+matrix nobody earned. A false green here would be worse than a blank.
+
+
 ### The store package shipped a font and not its licence
 
 The extension bundles Inter instead of loading it from

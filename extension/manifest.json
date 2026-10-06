@@ -74,6 +74,7 @@
     {
       "resources": [
         "engine/*.js",
+        "policy.js",
         "store.js",
         "fonts/*"
       ],

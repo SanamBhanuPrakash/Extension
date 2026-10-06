@@ -959,3 +959,110 @@ should stay neutral as the hosts redesign around it.
 looking plainer than it could. That is recoverable. The other direction —
 shipping something that implies an affiliation nobody granted — is a
 trademark question and a trust failure at once, and it is not.
+
+---
+
+### 40. The allowlist was going through Google's servers
+
+**Context.** `chrome.storage.sync` is convenient and it is also a network
+service: Chrome replicates it to every browser the person is signed into,
+which means through Google's servers. Chrome's own documentation says not to
+put confidential user information in it.
+
+The options page wrote the whole policy there, and the policy contains
+`allow` — the allowlist. That field is made entirely of strings somebody
+typed *because they are sensitive*. "Never treat this as a finding" is how you
+tell Chhanni about a customer's email address, an internal codename, a shared
+test credential, a project whose name is not public.
+
+**Why this is the worst kind of bug this project can have.** The claim was not
+false about Chhanni's own behaviour. There is no `fetch` in the codebase, no
+network permission in the manifest, and CI fails the build if a shipped module
+references a network API. The claim was false about the *outcome*, and the
+outcome is the only thing anybody cares about. "Our code makes no request" is
+not an answer to "does my customer's address leave this laptop". A privacy
+product that answers the second question with the first is doing the thing it
+exists to stop.
+
+**Decision.** Split by what a setting reveals. The interruption level and which
+detectors are switched off go to `sync` — they say how cautious somebody is,
+nothing about who they work with, and following them to a new laptop is the
+point. The allowlist goes to `local` and never leaves the profile.
+
+`extension/policy.js` owns the split and both readers use it, because two
+copies of "which fields are safe to replicate" is exactly the kind of drift
+where the wrong copy is the one nobody reads.
+
+**Migration, which is the part that is easy to skip.** A profile that already
+synced an allowlist has those values sitting in a replicated store. Reading
+from somewhere else would fix the behaviour and leave the exposure. So the
+first read moves them and **deletes the synced copy**, and the options page
+says it happened rather than fixing it quietly.
+
+Two browser cases assert this against the storage areas directly, and both
+fail when the split is reverted.
+
+---
+
+### 41. "And continue" has to continue, and the verify step is the point
+
+**Context.** On a send interception the panel's primary button says "Redact 2
+and continue". The handler wrote the redacted text into the composer and
+stopped. The person had to press Send again.
+
+**Decision.** One action: transform, verify, send.
+
+The middle step is why this is not simply `write(); resend()`. Writing to a
+composer is a negotiation with somebody else's editor — a React textarea keeps
+its own state, a ProseMirror surface keeps a document model, and
+`writeComposer` reaches both through the paths that worked when it was
+written. If a provider changes its editor, the write can silently fail to
+take. Replaying the send on the strength of a write that did not land would
+transmit the original secret while the panel said it had been redacted, which
+is strictly worse than doing nothing at all.
+
+So the composer is read back through the same accessor the send path uses, and
+a fresh scan has to agree that what is there no longer carries the finding that
+stopped the send. Only then is the send replayed. If the read-back disagrees,
+nothing is sent and the panel says which of the two things went wrong.
+
+A browser case covers it with a fixture whose editor is instrumented to refuse
+Chhanni's write, because that is what a provider rewriting its composer looks
+like from inside a content script.
+
+---
+
+### 42. Three modes, one table
+
+**Context.** `scanPolicy()` put every severity but `critical` into the warn
+set. `guardSubmission()` returned early in warn mode on any verdict that was
+not `block`. Neither line is wrong on its own and the composition was a hole:
+
+    pasted Google API key    panel appears
+    typed Google API key     sends, in silence
+
+`high` is twenty-five detectors including a Slack webhook, a SendGrid key, a
+Twilio key, a Notion token and an IBAN. LIMITATIONS § 15c had listed `high` in
+warn mode as "panel, send stopped" since 0.4.0 — the table was the
+specification, it was right, and the code did not implement it.
+
+The asymmetry is the part that matters. People do not only paste secrets, they
+type them, and the weaker path was the one where nobody would have noticed.
+
+**Decision.** The modes are a table in one place, which the paste path and the
+send path both read:
+
+               raises the panel on paste    stops the send
+    strict     anything found                anything found
+    warn       anything found                critical or high
+    off        nothing                       nothing
+
+Making the one row true again was the easy part; the fix is that there is now a
+single declaration for both paths to disagree with, instead of two
+implementations to drift apart. A browser case asserts that the paste path and
+the send path *agree*, whatever the mode decides — which is the invariant, and
+it would have failed before this.
+
+`low` still does not stop a send in warn mode, and that is deliberate: a lone
+email address is a `low` finding, and interrupting a send over one would make
+the mode most people leave on unusable.

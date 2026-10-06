@@ -2,12 +2,12 @@ import { RULES, RULES_BY_ID, CATEGORIES } from './engine/rules.js';
 import { scan } from './engine/detect.js';
 import { redact } from './engine/redact.js';
 import { mergePolicy } from './engine/managed.js';
+import { DEFAULTS, LOCAL_FIELDS, readPolicy, writePolicy } from './policy.js';
 
-const DEFAULTS = { mode: 'warn', disabled: [], allow: [] };
 const $ = (id) => document.getElementById(id);
 
-const stored = await chrome.storage.sync.get('policy');
-const userPolicy = { ...DEFAULTS, ...(stored.policy || {}) };
+const { policy: own, migrated } = await readPolicy();
+const userPolicy = { ...DEFAULTS, ...own };
 
 // Organisation policy arrives through the browser's own enterprise channel —
 // GPO, a macOS profile, Chrome Enterprise, Firefox policies.json. It is a
@@ -36,9 +36,11 @@ if (policy.managed?.active) {
 
 async function save(patch) {
   Object.assign(policy, patch);
-  // Only the user's own settings are written back; policy is not ours to edit.
-  const { managed: _managed, codenames: _codenames, ...own } = policy;
-  await chrome.storage.sync.set({ policy: own });
+  // Only the user's own settings are written back; an administrator's policy
+  // is not ours to edit. `policy.js` decides which of ours may be replicated
+  // to other devices and which may not leave this one.
+  const { managed: _managed, codenames: _codenames, ...mine } = policy;
+  await writePolicy(patch, mine);
   const el = $('saved');
   el.classList.add('on');
   setTimeout(() => el.classList.remove('on'), 1200);
@@ -127,6 +129,19 @@ $('search').oninput = (e) => renderGroups(e.target.value);
 $('enableAll').onclick = () => save({ disabled: [] }).then(() => renderGroups($('search').value));
 
 // -------------------------------------------------------------- allowlist
+//
+// If this profile had already synchronised an allowlist, `readPolicy()` has
+// just moved it into local storage and deleted the synchronised copy. Say so
+// rather than fixing it quietly: somebody who put a customer's address in
+// this box deserves to know it had been leaving the device, and that it has
+// stopped.
+if (migrated.includes('allow')) {
+  const note = $('migratedNote');
+  note.textContent = 'Your allowlist was previously synchronised to your other browsers. '
+    + 'It has been moved to this device only, and the synchronised copy has been deleted.';
+  note.hidden = false;
+}
+
 const allow = $('allow');
 allow.value = policy.allow.join('\n');
 allow.onchange = () =>

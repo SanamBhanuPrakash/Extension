@@ -644,6 +644,28 @@ catches. A settings page that names the two things which can never fire is not
 a wording problem. It is the interface claiming coverage the engine does not
 have.
 
+This table is the specification, and for one row the code did not meet it.
+
+`high` in warn mode is listed below as "panel, send stopped". It was not.
+`scanPolicy()` put every severity but `critical` into the warn set, and
+`guardSubmission()` then returned early in warn mode on any verdict that was
+not `block`. Compose those two lines:
+
+| | pasted | typed and sent |
+|---|---|---|
+| a Google API key, before | panel | **sent, in silence** |
+| a Google API key, now | panel | panel, send stopped |
+
+`high` is twenty-five detectors — a Slack webhook, a SendGrid key, a Twilio
+key, a Notion token, an IBAN. The asymmetry is the worst part of it: people do
+not only paste secrets, they type them, and the path that was weaker is the one
+where nobody would have noticed. Two browser cases now pin it, one of which
+asserts only that the two paths *agree*, whatever the mode decides.
+
+The modes are declared once in `content.js` as a table that both the paste path
+and the send path read, rather than each deciding for itself. That is the
+actual fix; making the one row true again was the easy part.
+
 Measured across every mode and every severity, and now asserted in
 `test/e2e/`:
 
@@ -670,6 +692,52 @@ promises to stop on findings would wave a 20 MB opaque binary through — which
 is what it did, with a toast. In strict it now raises the panel and waits. In
 warn it is still named and still allowed, because a mode most people leave on
 has to stay usable.
+
+---
+
+## 15c3. Where a setting lives is a privacy question
+
+`chrome.storage.sync` is convenient and it is also a network service. Chrome
+replicates it to every browser the person is signed into, which means through
+Google's servers, and Chrome's own documentation says not to put confidential
+user information in it.
+
+The whole policy went there, allowlist included — and the allowlist is the one
+field made entirely of strings somebody typed *because* they are sensitive.
+"Never treat this as a finding" is how you tell Chhanni about a customer's
+email address, an internal codename, a shared test credential, a project whose
+name is not public. Every one of those was being replicated off the device by a
+product whose central claim is that nothing leaves it.
+
+**The claim was not false about Chhanni's own behaviour.** There is still no
+`fetch` in this codebase, no network permission in the manifest, and CI fails
+the build if a shipped module so much as references a network API. It was false
+about the outcome, which is the only thing anybody actually cares about, and
+*our code makes no request* is not an answer to *does my customer's address
+leave this laptop*.
+
+Settings are now split by what they reveal:
+
+| | where | why |
+|---|---|---|
+| interruption level | `storage.sync` | says how cautious you are, nothing about what you work on — and following you to a new laptop is the point |
+| which detectors are off | `storage.sync` | same |
+| **the allowlist** | **`storage.local`** | **made of values you marked as sensitive** |
+| detection history | `storage.local` | masked previews and salted digests, never synced |
+| fingerprint salt | `storage.local` | synced, it would correlate your devices |
+
+A profile that had already synced an allowlist is migrated on first read: the
+values are written to local storage and **deleted from the synced copy**, which
+removes them from the replicated store too. Doing nothing there would have
+fixed the behaviour and left the exposure. The options page says so when it
+happens, rather than fixing it quietly — somebody who put a customer's address
+in that box deserves to know it had been leaving the device, and that it has
+stopped.
+
+`extension/policy.js` owns the split, and both the content script and the
+options page read it from there. Two copies of "which fields are safe to
+replicate" is exactly the kind of drift where the wrong copy is the one nobody
+reads.
 
 ---
 

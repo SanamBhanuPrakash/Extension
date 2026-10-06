@@ -212,6 +212,10 @@ const STRIPE = ['sk', 'live', '51H8xQ2eZvKYlo2C0abcdefghij'].join('_');
 // Slack's own documented placeholder shape, assembled for the same reason.
 const WEBHOOK = ['https://hooks.slack.com/services', 'T00000000', 'B00000000',
                  'XXXXXXXXXXXXXXXXXXXXXXXX'].join('/');
+// A `high` credential rather than a `critical` one. Severity is the whole
+// point of these cases: `high` is twenty-five detectors, and it was the tier
+// that typed input sent without a word.
+const HIGH_KEY = ['AIza', 'SyD', 'x'.repeat(32)].join('');
 const SECRET = `AWS_ACCESS_KEY_ID=${KEY}`;
 const READY_MS = 3500;          // only used where readiness cannot be observed
 const THROTTLE = (() => {
@@ -402,6 +406,16 @@ async function test(name, page, body, readySelector = '#prompt-textarea') {
 
 const sent = (p) => p.evaluate(() => (window.__sent || []).map((s) => s.how + ':' + (/AKIA[A-Z0-9]{16}/.test(s.text) ? 'WITH-KEY' : 'clean')));
 const files = (p) => p.evaluate(() => window.__files || []);
+/**
+ * Did the provider receive this substring?
+ *
+ * Answered inside the page and returned as a boolean, because `sent()` above
+ * deliberately never hands the transmitted text back to the harness — so that
+ * no failure message can print a key. A test that needs to assert on content
+ * asks a yes/no question rather than widening that hole.
+ */
+const sentHas = (p, needle) => p.evaluate(
+  (n) => (window.__sent || []).some((s) => String(s.text).includes(n)), needle);
 const panelUp = (p) => p.evaluate(() => !!document.querySelector('.chhanni-panel'));
 /**
  * A notice about the content, not about the extension's own startup.
@@ -585,6 +599,13 @@ await test('a pasted image goes through inspection and its coverage is stated', 
   const notice = await waitNotice(p, /not the pixels|no OCR/);
   t.ok(/not the pixels|no OCR/i.test(notice),
     `the user was not told the pixels went uninspected: ${JSON.stringify(notice.slice(0, 120))}`);
+  // Poll for the delivery too. Replacing the old fixed sleep with a poll for
+  // the *notice* made this case intermittently red, because the notice can
+  // appear before the page has finished recording the file — a poll for one
+  // condition is not a poll for the other, and the sleep had been covering
+  // both by accident.
+  await p.waitForFunction(() => (window.__files || []).length > 0, null, { timeout: 20000 })
+    .catch(() => {});
   const got = await files(p);
   t.ok(got.length === 1, `expected the image to be handed on after inspection, got ${got.length}`);
 });
@@ -945,6 +966,151 @@ await test('the self-test says so when the guard does not work', 'app-textarea.h
   const after = await selfTestStatus(p);
   t.equal(after.kind, 'bad', `a credential went through unchallenged and the card said: ${after.text}`);
 }, null);
+
+// ─────────────────────────── where a setting lives is a privacy question
+//
+// `chrome.storage.sync` is a network service: Chrome replicates it to every
+// browser the person is signed into, through Google's servers. The whole
+// policy used to go there, allowlist included — and the allowlist is made
+// entirely of strings somebody typed *because* they are sensitive. "Never
+// treat this as a finding" is how you tell Chhanni about a customer's email
+// address or an internal codename.
+//
+// These assert on the storage areas directly, from an extension page, because
+// that is the only place the claim can be checked.
+
+/** Run `fn` on the extension's own options page, where chrome.storage exists. */
+async function onExtensionPage(ctx, fn, arg) {
+  const admin = await ctx.newPage();
+  await admin.goto('chrome://extensions');
+  await admin.waitForTimeout(600);
+  const id = await admin.evaluate(() => document.querySelector('extensions-manager')?.shadowRoot
+    ?.querySelector('extensions-item-list')?.shadowRoot?.querySelector('extensions-item')?.id);
+  const opt = await ctx.newPage();
+  await opt.goto(`chrome-extension://${id}/options.html`);
+  await opt.waitForTimeout(500);
+  const out = await opt.evaluate(fn, arg);
+  await opt.close();
+  await admin.close();
+  return out;
+}
+
+await test('an allowlist entry never reaches storage.sync', 'app-textarea.html', async (p, t, ctx) => {
+  const secretish = 'acme-project-thunderbird';
+  const areas = await onExtensionPage(ctx, async (value) => {
+    const { writePolicy, readPolicy } = await import('./policy.js');
+    const { policy } = await readPolicy();
+    await writePolicy({ allow: [value], mode: 'warn' }, policy);
+    const sync = await chrome.storage.sync.get(null);
+    const local = await chrome.storage.local.get(null);
+    return { sync: JSON.stringify(sync), local: JSON.stringify(local) };
+  }, secretish);
+
+  t.ok(!areas.sync.includes(secretish),
+    'an allowlist value was written to storage.sync, which Chrome replicates off the device');
+  t.ok(areas.local.includes(secretish), 'the allowlist was not persisted locally either');
+  // The preference itself is fine to sync: it says how cautious somebody is,
+  // not who they work with.
+  t.ok(areas.sync.includes('warn'), 'the interruption level should still follow the person');
+});
+
+await test('an allowlist already in storage.sync is moved out of it', 'app-textarea.html', async (p, t, ctx) => {
+  // Shipping the split is not enough. A profile that already synced an
+  // allowlist has those values sitting in a replicated store, and leaving
+  // them there while quietly reading from somewhere else would fix the
+  // behaviour and not the exposure.
+  const stranded = 'contact@acquisition-target.example';
+  const after = await onExtensionPage(ctx, async (value) => {
+    await chrome.storage.sync.set({ policy: { mode: 'warn', disabled: [], allow: [value] } });
+    const { readPolicy } = await import('./policy.js');
+    const { policy, migrated } = await readPolicy();
+    const sync = await chrome.storage.sync.get(null);
+    const local = await chrome.storage.local.get(null);
+    return { sync: JSON.stringify(sync), local: JSON.stringify(local), migrated, allow: policy.allow };
+  }, stranded);
+
+  t.ok(!after.sync.includes(stranded), 'the synced copy of the allowlist was left in place');
+  t.ok(after.local.includes(stranded), 'the allowlist was dropped instead of moved');
+  t.ok(after.allow.includes(stranded), 'the setting stopped working after the move');
+  t.ok(after.migrated.includes('allow'), 'the move happened silently, with nothing to report');
+});
+
+// ───────────────────────────── the modes, as one table, on both paths
+//
+// `scanPolicy()` put everything but `critical` into `warn`, and
+// `guardSubmission()` returned early in warn mode on any verdict that was not
+// `block`. Composed, those two lines meant a pasted Google API key raised the
+// panel and a *typed* one sent silently — and LIMITATIONS claimed the
+// opposite. People do not only paste secrets. The path that was weaker was
+// the one where nobody would notice.
+
+await test('a typed high-severity credential stops the send in warn mode', 'app-textarea.html', async (p, t) => {
+  await p.locator('#prompt-textarea').fill(`the key is ${HIGH_KEY}`);
+  await p.locator('#send').click();
+  t.ok(await waitPanel(p), 'a typed Google API key sent with no panel at all');
+  t.equal(JSON.stringify(await sent(p)), '[]', 'the provider received it');
+});
+
+await test('pasting and typing the same credential behave the same way', 'app-textarea.html', async (p, t) => {
+  // The asymmetry itself, asserted. Whatever the mode does, it must not
+  // depend on how the characters arrived.
+  await paste(p, `the key is ${HIGH_KEY}`);
+  const onPaste = await panelUp(p);
+  await p.reload();
+  await waitReady(p, '#prompt-textarea');
+  await p.locator('#prompt-textarea').fill(`the key is ${HIGH_KEY}`);
+  await p.locator('#send').click();
+  const onSend = await waitPanel(p);
+  t.equal(onSend, onPaste, `paste raised ${onPaste} and send raised ${onSend}`);
+});
+
+await test('a lone email does not stop a send in warn mode', 'app-textarea.html', async (p, t) => {
+  // The other half of the table. A mode most people leave on has to stay
+  // usable, and interrupting a send over one email address would make it
+  // unusable. `low` is detected and shown on paste; it does not block.
+  await p.locator('#prompt-textarea').fill('please reply to priya.nair@example.com about this');
+  await p.locator('#send').click();
+  await p.waitForFunction(() => (window.__sent || []).length > 0, null, { timeout: 15000 }).catch(() => {});
+  t.equal((await sent(p)).length, 1, 'a lone email address blocked the send');
+});
+
+// ──────────────────────────── "and continue" has to actually continue
+
+await test('Redact and continue sends the redacted text, in one action', 'app-textarea.html', async (p, t) => {
+  // The button said "Redact 1 and continue" and the handler wrote the text
+  // back into the composer and stopped, so the person had to press Send
+  // again. The gap between a label and its handler is a defect here.
+  await p.locator('#prompt-textarea').fill(`my key is ${KEY} please help`);
+  await p.locator('#send').click();
+  t.ok(await waitPanel(p), 'no panel for a typed credential');
+  await p.locator('.chhanni-panel .chhanni-primary').click();
+  await p.waitForFunction(() => (window.__sent || []).length > 0, null, { timeout: 15000 }).catch(() => {});
+  const got = await sent(p);
+  t.equal(got.length, 1, 'redact-and-continue did not send anything');
+  t.equal(got[0], 'click:clean', 'the redacted send still carried the key');
+  t.ok(await sentHas(p, 'please help'), 'the rest of the message was lost');
+  t.ok(await sentHas(p, '<AWS_ACCESS_KEY_ID_1>'), 'the placeholder did not reach the provider');
+});
+
+await test('a composer that reverts the redaction does not get sent', 'app-controlled.html', async (p, t) => {
+  // The reason "and continue" is write-then-verify rather than write-then-send.
+  // This page's editor is instrumented to refuse Chhanni's write, which is
+  // what a provider changing its editor looks like from here. Replaying the
+  // send after a failed write would transmit the original secret while the
+  // panel claimed it had been redacted — strictly worse than doing nothing.
+  // Typed first, *then* the editor starts refusing: setting the flag before
+  // the fill makes the page refuse the typing too, and a guard that never saw
+  // any text is not what this is testing.
+  await p.locator('#prompt-textarea').fill(`my key is ${KEY}`);
+  await p.evaluate(() => { window.__refuseWrites = true; });
+  await p.locator('#send').click();
+  t.ok(await waitPanel(p), 'no panel for a typed credential');
+  await p.locator('.chhanni-panel .chhanni-primary').click();
+  await p.waitForTimeout(900);
+  const got = await sent(p);
+  t.equal(JSON.stringify(got), '[]', 'a send went out after the redaction was reverted');
+  t.ok(await waitPanel(p), 'nothing told the person the redaction had not taken');
+});
 
 await test('a Kubernetes Secret does not reach the provider', 'app-textarea.html', async (p, t) => {
   // A Secret's data values are always Base64 — that is the format, not an

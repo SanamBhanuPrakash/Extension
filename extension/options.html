@@ -70,6 +70,8 @@
   .det .proof { font-size: 10px; color: var(--ok); border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; margin-left: auto; white-space: nowrap; }
   .det .shape { font-size: 10px; color: var(--faint); border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; margin-left: auto; white-space: nowrap; }
 
+  .local-note { margin-top: 9px; }
+  .local-note strong { color: var(--text); font-weight: 590; }
   textarea#allow { width: 100%; min-height: 76px; font: 12px/1.6 var(--mono); padding: 9px 10px; border: 1px solid var(--hairline); border-radius: 8px; background: var(--surface); color: var(--text); resize: vertical; }
   footer { color: var(--muted); font-size: 12px; border-top: 0.5px solid var(--hairline); padding-top: 16px; margin-top: 22px; }
   footer strong { color: var(--text); font-weight: 500; }
@@ -134,6 +136,12 @@
     <h2>Never flag these</h2>
     <p class="hint">One value per line. For sample keys in your own docs and shared test fixtures.</p>
     <textarea id="allow" spellcheck="false" placeholder="sk_test_EXAMPLEKEYFROMOURDOCS00"></textarea>
+    <p class="hint local-note"><strong>This list stays on this device.</strong> It is the one
+      setting made of values you typed because they are sensitive, so it is kept in local
+      storage and is never synchronised to your other browsers. The interruption level above
+      and which detectors are switched off do sync, because they say how cautious you are and
+      nothing about what you work on.</p>
+    <p class="hint" id="migratedNote" hidden></p>
   </section>
 
   <footer>

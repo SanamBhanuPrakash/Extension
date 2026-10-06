@@ -36,7 +36,7 @@ npm install --no-save playwright
 npx playwright install chromium
 ```
 
-Thirty cases run. They assert on what a mock provider *received*, never on
+Thirty-seven cases run. They assert on what a mock provider *received*, never on
 whether a panel appeared — "the panel was shown" and "the key did not leave"
 are different claims and only the second one is the product.
 
@@ -104,6 +104,58 @@ shimmer — and the response scanner's debounce used to be reset by every one of
 those mutations, forever, so it never ran at all on any site it matched. If that
 line ever says `never noticed` again, a documented feature is dead and no unit
 test will tell you.
+
+---
+
+## 1c. What the provider actually received
+
+```console
+node scripts/build.js
+node test/provider/run.mjs --profile ~/.chhanni-test-profile
+```
+
+Every other suite in this repository asserts against a mock, which is the
+right way to test interception logic and cannot answer the question the
+product exists to answer. *A fixture recorded nothing* and *ChatGPT received
+nothing* are different claims, and the gap between them is where a provider's
+own editor lives: a React textarea with internal state, a ProseMirror document
+model, a composer that re-renders from a store a moment after Chhanni wrote to
+the DOM.
+
+This harness drives the real products in your own signed-in profile and
+watches the network. **The assertion is on the request body the provider's own
+code sent**, read through CDP — not on whether a panel appeared, not on what
+the composer looks like afterwards. If the sentinel is in that body, the guard
+failed, whatever the UI said.
+
+The first run opens a visible browser so you can sign in; logins persist in
+the profile directory you name, and later runs reuse them.
+
+```console
+node test/provider/run.mjs --profile <dir> --only chatgpt
+node test/provider/run.mjs --profile <dir> --headless          # once signed in
+node test/provider/run.mjs --profile <dir> --matrix docs/PROVIDERS.md
+xvfb-run -a node test/provider/run.mjs --profile <dir>         # a server, first run
+```
+
+**The sentinel is `AKIAIOSFODNN7EXAMPLE`**, from AWS's own documentation. This
+harness deliberately attempts sends that may succeed, because that is the only
+way to learn what a provider receives — so the value that might get through has
+to be one whose escape costs nothing. Never put a real credential in it, and do
+not "improve" it with a realistic random key: a random key that happens to be
+live somewhere is a real leak.
+
+**A cell nobody could drive says `not tested`, never `held`.** If the composer
+selector no longer matches, or you are not signed in, every row for that
+provider reports why and the run exits non-zero rather than printing a green
+matrix nobody earned. Two of the ten paths are driven today — paste, and typed
+plus Enter. The other eight need a per-provider driver, because guessing at
+somebody else's re-render behaviour produces a cell that says "held" when in
+truth nothing happened, and a false green here is worse than a blank.
+
+**A pass expires.** These are other people's products and their composers
+change without notice, so `--matrix` stamps the date into the file and that
+date is part of the result.
 
 ---
 

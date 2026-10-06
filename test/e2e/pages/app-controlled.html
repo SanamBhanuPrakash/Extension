@@ -37,7 +37,18 @@ let state = '';
 const ta = document.getElementById('prompt-textarea');
 // React attaches a real listener and reads e.target.value; the native setter
 // plus a bubbling input event is what makes this fire.
-ta.addEventListener('input', (e) => { state = e.target.value; render(); });
+// `__refuseWrites` models the failure mode that makes write-then-verify
+// necessary rather than merely tidy: an editor whose state does not accept an
+// outside write, which is what a provider rewriting its composer looks like
+// from inside a content script. The write appears to succeed, the next render
+// puts the original text back, and anything that replayed the send on the
+// strength of the write having "worked" would transmit the secret while the
+// panel said it had been redacted.
+ta.addEventListener('input', (e) => {
+  if (window.__refuseWrites) { render(); return; }
+  state = e.target.value;
+  render();
+});
 function render() { if (ta.value !== state) ta.value = state; }
 window.__forceRender = () => render();
 window.__state = () => state;
