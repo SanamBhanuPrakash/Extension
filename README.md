@@ -316,6 +316,10 @@ Add-ons are free. Store assets are generated at the required sizes in
 | [PRIOR-ART](docs/PRIOR-ART.md) | Who did this first, who sells it, what this lacks |
 | [ROADMAP](docs/ROADMAP.md) | Where the exposure is, and what is genuinely left |
 | [PUBLISHING](docs/PUBLISHING.md) | Store requirements, fees, listing copy |
+| **[SYSTEM-DESIGN](docs/SYSTEM-DESIGN.md)** | **The frozen architecture: the artifact, the pipeline, the states that must never be conflated** |
+| [V1-CONTRACT](docs/V1-CONTRACT.md) | What must be true before V1, and what is explicitly not V1 |
+| [RELEASE-GATE](docs/RELEASE-GATE.md) | The gate, as something you run: `node scripts/gate.js` |
+| [PROVIDERS](docs/PROVIDERS.md) | Real-provider evidence. Today: none, and it says so |
 | [DECISIONS](docs/DECISIONS.md) | Forty-five decision records, each with its cost |
 | [CHANGELOG](CHANGELOG.md) · [PRIVACY](PRIVACY.md) | |
 

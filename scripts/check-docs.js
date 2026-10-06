@@ -270,6 +270,31 @@ if (!e2e) {
   }
 }
 
+// ── the plan documents cannot quietly go missing ─────────────────────────
+//
+// SYSTEM-DESIGN, V1-CONTRACT, RELEASE-GATE and PROVIDERS are the frozen
+// architecture and the definition of done. They are the answer to this
+// project's actual failure mode — endless auditing with no shape to fix
+// things into — and a repository that lost one of them would be back to it.
+for (const plan of ['docs/SYSTEM-DESIGN.md', 'docs/V1-CONTRACT.md',
+  'docs/RELEASE-GATE.md', 'docs/PROVIDERS.md']) {
+  if (!existsSync(join(root, plan))) problems.push(`${plan} is missing`);
+}
+// Every criterion the gate checks must be named in RELEASE-GATE.md, so the
+// script and the document cannot drift apart.
+{
+  const gate = read('scripts/gate.js');
+  const doc = read('docs/RELEASE-GATE.md');
+  const criteria = [...gate.matchAll(/^gate\('[A-Z]+', '([^']+)'/gm)].map((m) => m[1]);
+  const missing = criteria.filter((name) => !doc.includes(name));
+  if (!criteria.length) problems.push('scripts/gate.js declares no criteria — the check has rotted');
+  else if (missing.length) {
+    problems.push(`docs/RELEASE-GATE.md does not list ${missing.length} gate criteri${missing.length === 1 ? 'on' : 'a'}: ${missing[0]}`);
+  } else {
+    checks.push(`release gate: ${criteria.length} criteria, all named in the document`);
+  }
+}
+
 // ── every doc link resolves ──────────────────────────────────────────────
 for (const where of ['README.md', 'docs/LIMITATIONS.md', 'docs/BENCHMARK.md', 'docs/ARCHITECTURE.md',
   'docs/THREAT-MODEL.md', 'docs/ROADMAP.md', 'docs/DECISIONS.md', 'CHANGELOG.md', 'PRIVACY.md']) {

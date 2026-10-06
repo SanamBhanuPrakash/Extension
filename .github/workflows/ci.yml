@@ -73,6 +73,13 @@ jobs:
       - name: Documentation still describes the code
         run: node scripts/check-docs.js --no-color
 
+      # The release gate, minus the parts that need a browser — those run as
+      # their own steps below. A FAIL here is a release blocker by definition;
+      # a BLOCKED criterion is one this runner cannot check and is listed in
+      # docs/RELEASE-GATE.md rather than skipped.
+      - name: The release gate
+        run: node scripts/gate.js --no-color
+
       # The engine suite cannot prove the product works. Four separate ways
       # past the guard shipped in 0.4.0 with 115 Node tests passing: clicking
       # Send, submitting a form, pasting a screenshot, and a composer inside an

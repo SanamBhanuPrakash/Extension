@@ -25,107 +25,149 @@ data, financials and HR records. A tool that only reads regexes over API keys
 serves less than a third of the actual exposure — which is the state this
 project was in two versions ago.
 
-## Now
+## Generations, not a list of ideas
 
-- **102 detectors. 28 prove the match** with a check digit, an offline decode,
-  an issuer range or a trained classifier. 100% precision and recall over 4,244
-  reproducible cases — and one alarm every 259 files across **87,306 files of
-  real public source**, which is the number that actually matters.
-- **Names and addresses in prose**: F1 98.9% and 100% across 34 annotated
-  documents in eight scripts.
-- **Attachments are read, not guessed at.** DOCX, XLSX, PPTX, ODT, ODS, ODP,
-  text-based PDF, RTF and image metadata — routed by magic bytes, parsed in the
-  page, zero dependencies.
-- **Files are handed back.** Redacted in place where the format allows it, as
-  text where it does not, and as the same image without its EXIF where there is
-  no text at all.
-- **Bulk-record detection**: a pasted export reads as *"184 customer records"*,
-  not 368 findings.
-- **Business context**: confidentiality markings, legal privilege, M&A
-  language, inside information, financials, compensation, health data, incident
-  detail — plus unannounced transactions, negotiating positions, trade secrets,
-  workforce decisions, live litigation and internal cost.
-- **A 0–100 exposure score** that says it is a priority and not a probability,
-  and the regulation each finding sits under, which says it is not a legal
-  conclusion.
-- **Coverage stated out loud**: the popup says whether the current tab is
-  watched, and offers to watch it if not.
-- **No network permission**, enforced by test.
+The old shape of this file was "Now" and "Next", and the trouble with "Next"
+is that it never empties: every audit adds to it and nothing ever leaves. So
+the plan is finite and in generations, each with a stated exit. Work that does
+not belong to the current generation is written down and **not started**.
 
-Everything it does not do is in [LIMITATIONS.md](LIMITATIONS.md).
+The authority on what is in V1 is `V1-CONTRACT.md`; the authority on whether
+it can ship is `scripts/gate.js`. This file is the ordering.
 
-## Shipped since the last revision of this file
+---
 
-| | |
-|---|---|
-| Unstructured PII in prose | A 21 KB logistic regression over hashed character n-grams plus structural context. The classifier alone reaches F1 71.7% and cannot go higher; context does the rest. [NER.md](NER.md) |
-| Non-Latin scripts | Ten uncased scripts and four cased ones, 10,237 names |
-| Team mode without a console | `chrome.storage.managed`: policy in, nothing out, no permission added |
-| Response-side scanning | Debounced, advisory, and now aware of open shadow roots |
-| Coverage that keeps up | Composer detection by shape, plus a working add-this-site control |
-| Documents and images | Read. **Not** OCR — see below |
-| Novel credential formats | `unlabelled_secret`, tuned against 87,306 real files |
-| Semantic confidentiality | Six advisory signals for the leak with no pattern in it |
+### V1 — a local boundary for prompts and attachments
 
-## Next — what is genuinely left
+**Problem.** 77% of employees paste into AI tools and 82% of those pastes go
+through personal accounts, where nothing an organisation bought can see them.
 
-### 1. A third-party benchmark
+**Capability.** Inspect what crosses from a browser into an AI product, say
+what was found and what could not be read, transform it on request, verify
+the transformation, and control whether it crosses.
 
-Still the most valuable open item, and the only one that changes what the
-project can honestly claim.
+**User value.** The thing you were about to send is caught, you fix it in one
+click, and the task still works.
 
-[SecretBench](https://arxiv.org/pdf/2303.06729) — 818 real repositories, 97,479
-candidate secrets, 15,084 labelled true — and FPSecretBench would make the
-credential numbers independent. Both require a signed data-protection agreement
-and BigQuery access. `bench/secretbench.js` is written and waiting.
+**Security invariant.** No surface claims a stronger state than it has:
+`DETECTED ≠ INSPECTED ≠ TRANSFORMED ≠ VERIFIED ≠ PREVENTED ≠ DELIVERED`.
 
-The prose equivalent is the
-[Text Anonymization Benchmark](https://aclanthology.org/2022.cl-4.19/).
+**Not included.** OCR, URL-structural detection, AI-response transformation,
+tool arguments, agent actions, any backend, any account.
 
-Expect both numbers to drop. Publishing the drop is the point.
+**Exit.** The sixteen rows of `V1-CONTRACT.md` read `done`, and
+`scripts/gate.js --full` reports no `FAIL`. One row does not: provider
+certification. That single row is the distance to V1.
 
-### 2. OCR, if it can be done without breaking the promise
+---
 
-The largest remaining capability gap, and the one most often assumed present.
-A screenshot of a dashboard is a common and completely unhandled leak.
+### V1.x — reliability, and keeping up with five moving products
 
-The options are all bad today. Tesseract's WASM build plus one language model
-is several megabytes, which roughly triples the package and invites the
-"obfuscated blob" question at store review. Fetching it on demand breaks the
-no-network promise. The Chrome `Translator`/`LanguageDetector` family hints at
-a future where the browser exposes on-device vision, and if `Shape Detection
-API` text recognition ever ships beyond an origin trial, this becomes a
-hundred-line change.
+**Problem.** AI frontends change their composers without notice. A dated
+`PASS` is evidence about that date and nothing else.
 
-Until then: metadata is read, the file is named, and the reason is stated.
+**Capability.** Drivers for all ten paths in `test/provider/run.mjs`; the
+provider adapter boundary made real at the first point a provider needs
+behaviour that cannot be expressed as a shape (`SYSTEM-DESIGN.md` §6).
 
-### 3. A gazetteer that generalises
+**User value.** It keeps working after ChatGPT redesigns.
 
-A name in a caseless script that nobody wrote down is missed, and coverage is
-uneven — Devanagari in particular is thin. The classifier generalises and the
-gazetteer cannot, so the real fix is a script-agnostic feature extractor
-trained on the same faker locales rather than more list entries.
+**Security invariant.** Provider-specific knowledge never enters the engine.
 
-### 4. Coreference, and person/organisation disambiguation
+**Not included.** New representations. No new detectors unless a measured gap
+demands one.
 
-"She said the invoice was wrong" is not linked back to Priya three sentences
-earlier, and the one remaining name false positive in the prose benchmark is a
-company read as a person. Both are solvable with more context modelling and
-neither is solvable with a bigger list.
+**Exit.** All five providers certified across all ten paths, re-certified on a
+schedule rather than on a hunch.
 
-### 5. OOXML rewriting, if it can be done safely
+---
 
-`convert` mode hands back `contract.docx.redacted.txt` rather than a redacted
-`.docx`, because re-zipping a placeholder into one XML part of a package held
-together by relationship ids produces a file that may not open. If that can be
-done provably safely — content types preserved, relationships intact,
-round-tripped through a real word processor in CI — it should be.
+### V2 — more kinds of artifact
 
-### 6. Legacy Office formats
+**Problem.** Prompts are not the only thing that crosses. A screenshot of a
+dashboard, a presigned URL, a rich-text paste from a document.
 
-`.doc`, `.xls`, `.ppt` and `.msg` are OLE2 compound files. The container format
-is documented and a reader is perhaps four hundred lines. Worth it only if
-people are actually attaching them.
+**Capability.** New `representation` extractors behind the existing pipeline:
+URL structure (query secrets, bearer fragments, presigned signatures, data
+URIs), and pixels via local OCR — with a `coverage` state that is honest when
+it cannot read them.
+
+**User value.** The commonest blind spot — "I just pasted a screenshot" —
+stops being a blind spot.
+
+**Security invariant.** An extractor may only *add* findings. It may never
+clear one, lower a severity, or turn `partial` into `clean`.
+
+**Not included.** Any cloud OCR. Any model that runs off the device.
+
+**Exit.** A screenshot of a credential is caught locally, or the UI says it
+was not read. Both outcomes are acceptable; silence is not.
+
+---
+
+### V3 — the response and the downstream
+
+**Problem.** What the model sends back is also data crossing a boundary: into
+the conversation's history, into a copy-paste, into a file somebody saves.
+
+**Capability.** The response scanner grown from advisory to a boundary with
+its own destination and transformations — including restoring aliases in a
+reply so the model's answer is usable without the model having seen the real
+identities.
+
+**User value.** Pseudonymisation becomes round-trip rather than one-way.
+
+**Security invariant.** Restoring an alias happens locally and only in memory.
+
+**Not included.** Any storage of the mapping.
+
+**Exit.** An aliased conversation can be held end to end without the real
+values ever leaving the device.
+
+---
+
+### V4 — tools, agents and browser actions
+
+**Problem.** An agent that can call a tool can carry data out in an argument,
+and a confirmation prompt asks *whether* an action may proceed while nothing
+inspects *what is in the arguments*.
+
+**Capability.** The same engine on a tool argument and an agent action, with a
+destination and a confirmation gate. Decision 31 records why nothing is built
+yet: `document.modelContext` does not exist in any shipping browser.
+
+**User value.** The boundary follows the data when the browser starts acting
+on its own.
+
+**Security invariant.** Deterministic inspection of arguments, never a model
+judging a model.
+
+**Not included.** Anything before there is an API to attach to.
+
+**Exit.** A tool call carrying a credential is held the same way a paste is.
+
+---
+
+### V5 — local policy for organisations
+
+**Problem.** A team wants a floor without a console, a vendor or a data
+pipeline.
+
+**Capability.** Managed policy is already read from the browser's own
+enterprise channel. This generation is codenames, required detectors, locked
+modes and an audit trail that stays on the device.
+
+**User value.** An organisation can set a floor without anybody's data
+leaving.
+
+**Security invariant.** Policy is *delivered* to the device and nothing is
+reported back. No telemetry, in any generation, ever.
+
+**Not included.** A dashboard. A server. An account.
+
+**Exit.** A policy can be deployed by GPO or a plist and verified locally.
+
+---
 
 ## Explicitly not doing
 
@@ -144,3 +186,67 @@ Every item above is a claim about where the exposure is, and each is checkable.
 If the next Cyberhaven report says the mix has moved, the order should move
 with it. The benchmark is the gate for anything that touches detection: a
 feature that lowers precision below 99% does not ship, however good the demo.
+
+---
+
+## Change control
+
+This section exists because the failure mode of this project is not a missing
+feature. It is that an interesting finding arrives, becomes a new roadmap item,
+and the roadmap never empties.
+
+**A finding is not a plan.** Every one gets a class:
+
+| class | means | may interrupt the current generation |
+|---|---|---|
+| **P0** | a release blocker: a silent fail-open, a misleading clean state, an unverified transformation reported as verified | yes, immediately |
+| **P1** | required for V1 reliability or security | yes |
+| **P2** | V1.x | no |
+| **P3** | a later generation | no |
+| **OUT** | does not attach to the boundary | not built |
+
+Only P0 and P1 interrupt. Everything else is written down and left.
+
+**Every change answers five questions.** If it cannot, it is not ready:
+
+1. What invariant does this protect?
+2. What test proves it, and does that test fail when the change is reverted?
+3. What existing behaviour could this break?
+4. What documentation must change with it?
+5. Does it move toward the frozen architecture in `SYSTEM-DESIGN.md`, or away?
+
+Question 2 is the one that is usually skipped and the one that has caught the
+most. Several times in this project a test passed against the broken code it
+was written for — a selector that matched the wrong element, an assertion
+impossible by construction, an input that produced no finding at all. **A test
+that does not fail when the fix is reverted is not evidence.**
+
+**Before building anything, six questions:**
+
+- Does it improve the core pain point?
+- Does it reduce a real, measured blind spot?
+- Does it make the boundary more trustworthy?
+- Does it make the product more useful *after* detection?
+- Does it make the system harder to bypass by accident?
+- Does it make the thing worth keeping installed?
+
+If the honest answer is no, it does not get built. In particular: no detector
+added to raise a count, no screen added to have a screen, no model added to be
+able to say there is a model, no telemetry added to obtain a metric.
+
+## What makes it stick
+
+Not notifications, badges, streaks or nagging. The retention argument is a
+sequence somebody experiences for themselves:
+
+> I was about to send something I shouldn't have.
+> Chhanni caught it.
+> I fixed it in one click.
+> **The task still worked.**
+> I trust it enough to leave installed.
+
+Every line of that is an engineering property — a low false-positive rate,
+low latency, a safe transformation, preserved task utility, accurate coverage
+— and not a growth mechanic. The fourth line is the one most easily lost, and
+it is why aliasing leads over redaction when nothing abusable was found, and
+why a formatted prompt keeps its formatting.
