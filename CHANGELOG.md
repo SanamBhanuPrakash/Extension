@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+### A lone email address was treated like an API key
+
+The scanner had grown broad enough to find emails, phone numbers, names,
+addresses, tax numbers, business context and secrets — and it interrupted for
+all of them the same way. That is not a detection problem, it is a product
+one: somebody who pastes "draft a reply to priya@…" does not think *excellent,
+my DLP scanner found another low-severity entity*, they think *I just want the
+draft*. A panel that fires equally for an AWS key and an email address teaches
+people to dismiss it, and a dismissed warning protects nobody.
+
+Findings now carry a **tier**, which answers the question severity does not:
+is this abusable by whoever receives it.
+
+    dangerous   70 detectors   credentials, payment instruments, government
+                               identity numbers. Stops a send in any mode.
+    personal    14 detectors   emails, phones, names, addresses, tax and
+                               company numbers. Said, offered an alias, not
+                               refused.
+    context     18 detectors   a negotiating position, a legal hold, a
+                               customer list. Describes what the text is
+                               about; nothing in it to replace, never blocks.
+
+It is enumerated rather than derived, because the mapping is not monotonic in
+either direction: `email` is `low` and personal, `us_ssn` is `critical` and
+dangerous, `gstin` is `medium` and personal, `pan_india` is `high` and
+dangerous. A rule that lands in no tier is a bug and a test asserts every one
+lands in exactly one; an unknown rule is treated as dangerous, never as quiet.
+
+### The alias offer leads where it actually helps
+
+"Redact and continue" was always the primary action. For a credential that is
+right — there is nothing to preserve about an API key and the useful outcome
+is that it is gone.
+
+For personal data it was the wrong default, and it was quietly working against
+the thing this product is best at. Redacting "Priya Nair at
+priya.nair@northwind-logistics.co.in" leaves the model guessing who it is
+writing to. An alias leaves it able to write the reply while never learning
+the address:
+
+    Draft a reply to Person_A at person_a@example.invalid about order 874321
+
+The task survives, the identity does not. So when nothing abusable was found
+and an alias is possible, **"Use aliases and continue" is the primary button**
+and Enter does that; with anything dangerous in the message, redaction leads
+as before. A browser case asserts both directions, and that the order number
+survives the aliasing while the name and address do not.
+
+Found while writing those tests: `example.com` is deliberately excluded from
+the email detector as a documentation domain — so the first version of "a lone
+email does not block the send" was asserting that a send went through when
+there had never been a finding to stop it. Both tests use a real-shaped domain
+now.
+
+
 ### Protecting a value cost you the formatting
 
 `writeComposer` selected the whole composer and typed a plain string over it.
@@ -340,7 +395,7 @@ past the budget this project set, and is recorded rather than quietly
 re-budgeted. [Decision 35](docs/DECISIONS.md) says what the fix is and why it
 is not in this change.
 
-- 135 tests, 27 browser cases, and a performance suite with budgets.
+- 138 tests, 43 browser cases, and a performance suite with budgets.
 
 ## 0.4.0 — 2026-10-01
 

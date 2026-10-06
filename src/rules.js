@@ -153,6 +153,65 @@ function insidePemBlock(text, index) {
   return end < begin;
 }
 
+/**
+ * Three tiers, because severity answers the wrong question for a person.
+ *
+ * Severity ranks how bad a finding is. What somebody about to send a message
+ * needs to know is a different thing: *is this abusable by whoever receives
+ * it*. Those come apart, and the gap was making the product worse to use.
+ *
+ *   dangerous   a credential, a payment instrument, a government identity
+ *               number. Someone who has it can act with it. Worth stopping a
+ *               send for, in any mode.
+ *   personal    an email address, a phone number, a name, a postal address, a
+ *               tax or company number. Sensitive, and not abusable on its own.
+ *               Worth saying, worth offering to replace with an alias, not
+ *               worth refusing to send over.
+ *   context     the judgement detectors: a negotiating position, a legal hold,
+ *               a customer list. These describe what the text is *about*. They
+ *               cannot be replaced with a placeholder without destroying the
+ *               question, so they are never transformed and never block.
+ *
+ * Why this matters more than it sounds: a scanner that interrupts equally for
+ * an AWS key and for the email address in "please draft a reply to
+ * priya@example.com" teaches people to dismiss it, and a dismissed warning
+ * protects nobody. The tier is what makes the alias offer the headline for
+ * personal data and the stop-everything response specific to the things that
+ * deserve it.
+ *
+ * Enumerated rather than derived from severity because the mapping is not
+ * monotonic: `email` is `low` and personal, `us_ssn` is `critical` and
+ * dangerous, `pan_india` is `high` and dangerous, `gstin` is `medium` and
+ * personal. A rule that lands in no tier is a bug, and a test asserts every
+ * rule lands in exactly one.
+ */
+const PERSONAL_IDS = new Set([
+  'email', 'phone_india',
+  // Tax, company and device numbers. Often semi-public, not usable to act.
+  'gstin', 'brazil_cnpj', 'australia_abn', 'eu_vat', 'isin', 'imei', 'ifsc',
+  // Payment *handles* rather than instruments: a UPI address is an address.
+  'upi_vpa',
+  // Identity documents that establish who somebody is without authorising
+  // anything on their behalf.
+  'voter_id', 'indian_dl',
+]);
+
+export const TIERS = ['dangerous', 'personal', 'context'];
+
+/** @param {object} rule a RULES entry @returns {'dangerous'|'personal'|'context'} */
+export function tierOf(rule) {
+  if (!rule) return 'dangerous';              // unknown is never the quiet tier
+  if (rule.advisory || rule.category === 'context') return 'context';
+  if (rule.category === 'prose') return 'personal';   // person_name, postal_address
+  if (PERSONAL_IDS.has(rule.id)) return 'personal';
+  return 'dangerous';
+}
+
+/** The tier of a finding, which carries a ruleId rather than a rule. */
+export function tierOfId(ruleId) {
+  return tierOf(RULES_BY_ID.get(ruleId) || null);
+}
+
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const B64_INDEX = new Int8Array(128).fill(-1);
 for (let i = 0; i < B64.length; i++) B64_INDEX[B64.charCodeAt(i)] = i;

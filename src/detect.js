@@ -9,7 +9,7 @@
  * use. There is no telemetry in this project, but the shape matters: someone
  * will fork this and add some, and the fork should be safe by construction.
  */
-import { RULES, RULES_BY_ID } from './rules.js';
+import { RULES, RULES_BY_ID, tierOf, tierOfId, TIERS } from './rules.js';
 import { detectTable, tableSeverity, describeTable } from './tabular.js';
 import { exposureScore, BAND_TEXT } from './risk.js';
 import { regimesFor, regimeNames } from './regulations.js';
@@ -679,4 +679,4 @@ export function summarise(findings) {
     .join(', ');
 }
 
-export { RULES, RULES_BY_ID };
+export { RULES, RULES_BY_ID, tierOf, tierOfId, TIERS };

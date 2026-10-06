@@ -161,7 +161,7 @@
 
   // Parallel, not sequential: eight round-trips to the extension's own
   // resources have no reason to queue behind each other.
-  let scan, groupFindings, RULES, exposureScore, BAND_TEXT, SCORE_NOTE, REGIME_NOTE,
+  let scan, groupFindings, RULES, tierOfId, exposureScore, BAND_TEXT, SCORE_NOTE, REGIME_NOTE,
       isComposer, isSendControl, SEND_SELECTOR, mergePolicy, redact, pseudonymise,
       extractDocument, rewriteMode, rewriteBytes, describeKind, store,
       readPolicy, isPolicyChange;
@@ -173,7 +173,7 @@
       import(url('engine/documents.js')), import(url('store.js')),
       import(url('policy.js')),
     ]);
-    ({ scan, groupFindings, RULES } = detectM);
+    ({ scan, groupFindings, RULES, tierOfId } = detectM);
     ({ exposureScore, BAND_TEXT, SCORE_NOTE } = riskM);
     ({ REGIME_NOTE } = regM);
     ({ isComposer, isSendControl, SEND_SELECTOR } = compM);
@@ -479,17 +479,28 @@
    * only thing that decides whether anybody is told.
    *
    *            raises the panel on paste    stops the send
-   *   strict   anything found                anything found
-   *   warn     anything found                critical or high
+   *   strict   anything found                dangerous or personal
+   *   warn     anything found                dangerous
    *   off      nothing                       nothing
    *
-   * Why `high` and not everything, in warn: a lone email address is a `low`
-   * finding and interrupting a send for one would make the mode most people
-   * leave on unusable. A credential is not a judgement call.
+   * The stop column is by *tier*, not severity, and that is the substance
+   * rather than a refactor. Severity ranks how bad a finding is; the tier
+   * answers the question somebody about to press Send actually has, which is
+   * whether what they are about to send is abusable by whoever receives it.
+   * Those come apart: `email` is `low` and personal, `us_ssn` is `critical`
+   * and dangerous, `gstin` is `medium` and personal.
+   *
+   * Stopping a send over a lone email address — which is what "warn stops
+   * high" grew into once `high` meant twenty-five things — teaches people to
+   * dismiss the panel, and a dismissed warning protects nobody. So warn stops
+   * for the seventy detectors that find something usable against you and says
+   * its piece about the other thirty-two without refusing to send. `context`
+   * never stops anything in any mode: those findings describe what the text
+   * is about, and there is nothing in them to replace.
    */
   const MODES = {
-    strict: { panel: ['critical', 'high', 'medium', 'low'], stop: ['critical', 'high', 'medium', 'low'] },
-    warn: { panel: ['critical', 'high', 'medium', 'low'], stop: ['critical', 'high'] },
+    strict: { panel: ['critical', 'high', 'medium', 'low'], stop: ['dangerous', 'personal'] },
+    warn: { panel: ['critical', 'high', 'medium', 'low'], stop: ['dangerous'] },
     off: { panel: [], stop: [] },
   };
   const modeTable = () => MODES[policy.mode] || MODES.warn;
@@ -511,7 +522,7 @@
    */
   const stopsSend = (result) => {
     const stop = new Set(modeTable().stop);
-    return result.findings.some((f) => !f.advisory && stop.has(f.severity));
+    return result.findings.some((f) => !f.advisory && stop.has(tierOfId(f.ruleId)));
   };
 
   function safeScan(text, opts) {
@@ -1081,23 +1092,52 @@
       panel.appendChild(recv);
     }
 
+    /**
+     * Which button is the primary one, decided by what was found.
+     *
+     * "Redact and continue" was always primary, and for a credential it
+     * should be: there is nothing to preserve about an API key, and the
+     * useful outcome is that it is gone.
+     *
+     * For personal data it is the wrong default, and defaulting to it was
+     * quietly working against the thing this product is best at. Somebody
+     * pasting "draft a reply to priya.nair@example.com about order 874321"
+     * does not want the email removed — they want the draft. Redacting leaves
+     * the model guessing who it is writing to; an alias leaves it able to
+     * write the reply while never learning the address. `Person_A` and
+     * `person_a@example.invalid` preserve the task and remove the identity,
+     * which is the only transformation here that gives something back rather
+     * than only taking something away.
+     *
+     * So: anything abusable in the message and redaction leads. Nothing
+     * abusable, and an alias is possible, and the alias leads. Nothing to
+     * replace at all and the primary is simply an acknowledgement, because a
+     * button labelled "Redact 0" would be a lie about what pressing it does.
+     */
+    const tierOf = (f) => (tierOfId ? tierOfId(f.ruleId) : 'dangerous');
+    const dangerous = findings.filter((f) => !f.advisory && tierOf(f) === 'dangerous').length;
+    const aliasable = onPseudonymise && findings.some((f) => !f.advisory && ALIASABLE.has(f.ruleId));
+    const aliasLeads = !redactLabel && !dangerous && aliasable;
+
     const actions = el('div', 'chhanni-actions');
-    const redactBtn = el('button', 'chhanni-primary',
+    const aliasTitle = 'Replace names, emails, phone numbers and addresses with stable '
+      + 'stand-ins, so the model can still follow who is who.';
+
+    const redactBtn = el('button', aliasLeads ? 'chhanni-second' : 'chhanni-primary',
       redactLabel || (redactable
         ? `Redact ${redactable} and continue`
         : 'I understand, continue'));
     redactBtn.onclick = () => { closePanel(); record('redacted'); onRedact(); };
     const proceedBtn = el('button', 'chhanni-ghost', proceedLabel || 'Send as-is');
     proceedBtn.onclick = () => { closePanel(); record('sent'); onProceed(); };
-    // Aliases, where the shape of the value is the thing the model needs.
-    // Offered only when at least one finding is identity-shaped, because
-    // "Person_A" helps and a pseudonymised API key does not exist.
-    const aliasable = onPseudonymise && findings.some((f) => !f.advisory && ALIASABLE.has(f.ruleId));
+
     if (aliasable) {
-      const aliasBtn = el('button', 'chhanni-second', 'Use aliases');
-      aliasBtn.title = 'Replace names, emails, phone numbers and addresses with stable stand-ins, so the model can still follow who is who.';
+      const aliasBtn = el('button', aliasLeads ? 'chhanni-primary' : 'chhanni-second',
+        aliasLeads ? 'Use aliases and continue' : 'Use aliases');
+      aliasBtn.title = aliasTitle;
       aliasBtn.onclick = () => { closePanel(); record('redacted'); onPseudonymise(); };
-      actions.append(redactBtn, aliasBtn, proceedBtn);
+      if (aliasLeads) actions.append(aliasBtn, redactBtn, proceedBtn);
+      else actions.append(redactBtn, aliasBtn, proceedBtn);
     } else {
       actions.append(redactBtn, proceedBtn);
     }
@@ -1127,7 +1167,8 @@
 
     const hint = el('div', 'chhanni-hint');
     hint.append(el('kbd', null, 'Enter'),
-      document.createTextNode(redactable ? ' redact  \u00b7  ' : ' continue  \u00b7  '),
+      document.createTextNode(aliasLeads ? ' use aliases  \u00b7  '
+        : redactable ? ' redact  \u00b7  ' : ' continue  \u00b7  '),
       el('kbd', null, 'Esc'), document.createTextNode(' back to editing'));
     panel.appendChild(hint);
 
@@ -1141,7 +1182,7 @@
 
     document.body.appendChild(panel);
     requestAnimationFrame(() => panel?.classList.add('chhanni-in'));
-    redactBtn.focus();
+    panel.querySelector('.chhanni-primary')?.focus();
 
     function record(action) {
       store.record(findings.filter((f) => !f.advisory), { host: location.hostname, action })
@@ -1152,7 +1193,9 @@
       if (e.key === 'Escape') { e.preventDefault(); closePanel(); record('dismissed'); onDismiss?.(); }
       else if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault(); e.stopImmediatePropagation();
-        closePanel(); record('redacted'); onRedact();
+        // Enter does what the primary button does, whichever that is.
+        closePanel(); record('redacted');
+        if (aliasLeads) onPseudonymise(); else onRedact();
       }
     };
     document.addEventListener('keydown', onKey, true);

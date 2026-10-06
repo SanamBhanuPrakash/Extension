@@ -967,6 +967,69 @@ await test('the self-test says so when the guard does not work', 'app-textarea.h
   t.equal(after.kind, 'bad', `a credential went through unchallenged and the card said: ${after.text}`);
 }, null);
 
+// ─────────────── three tiers, and the alias offer leading where it helps
+//
+// Severity ranks how bad a finding is; the tier answers the question somebody
+// about to press Send actually has, which is whether what they are sending is
+// abusable by whoever receives it. Stopping a send over a lone email address
+// — which is what "warn stops high" grew into once `high` meant twenty-five
+// things — teaches people to dismiss the panel, and a dismissed warning
+// protects nobody.
+
+await test('for personal data the alias offer leads, not redaction', 'app-textarea.html', async (p, t) => {
+  // Nothing abusable here: an email and a name. Removing them leaves the
+  // model guessing who it is writing to; an alias leaves it able to write the
+  // reply while never learning the address. That is the one transformation
+  // that gives something back.
+  await paste(p, 'Draft a polite reply to Priya Nair at priya.nair@northwind-logistics.co.in about order 874321');
+  t.ok(await panelUp(p), 'personal data raised no panel at all');
+  const primary = await p.evaluate(() =>
+    document.querySelector('.chhanni-panel .chhanni-primary')?.innerText || '');
+  t.ok(/alias/i.test(primary), `the primary action was ${JSON.stringify(primary)}`);
+});
+
+await test('for a credential redaction leads, not aliases', 'app-textarea.html', async (p, t) => {
+  await paste(p, `the key is ${KEY} and the account is live`);
+  t.ok(await panelUp(p), 'a credential raised no panel');
+  const primary = await p.evaluate(() =>
+    document.querySelector('.chhanni-panel .chhanni-primary')?.innerText || '');
+  t.ok(/redact/i.test(primary), `the primary action was ${JSON.stringify(primary)}`);
+  t.ok(!/alias/i.test(primary), 'an API key was offered an alias, which does not exist');
+});
+
+await test('aliases preserve the task and remove the identity', 'app-textarea.html', async (p, t) => {
+  // Personal-only findings do not stop a send in warn, so this goes through
+  // the paste path's panel rather than the send guard. Nothing is typed first:
+  // the paste is what is intercepted, and a composer that already held the
+  // address would leave it there whatever the alias did.
+  await paste(p, 'Draft a reply to Priya Nair at priya.nair@northwind-logistics.co.in about order 874321');
+  t.ok(await panelUp(p), 'no panel');
+  await p.locator('.chhanni-panel .chhanni-primary').click();
+  await p.waitForTimeout(700);
+  const value = await p.locator('#prompt-textarea').inputValue();
+  t.ok(!value.includes('priya.nair@northwind-logistics.co.in'), 'the real address survived the alias');
+  t.ok(!value.includes('Priya Nair'), 'the real name survived the alias');
+  t.ok(/order 874321/.test(value), 'the task was destroyed along with the identity');
+  t.ok(/person_a@example\.invalid|Person_A/i.test(value),
+    `nothing recognisable replaced them: ${JSON.stringify(value)}`);
+});
+
+await test('a lone email does not stop a send, a credential does', 'app-textarea.html', async (p, t) => {
+  // The tier table, asserted on the path that matters. Same mode, same
+  // action, two different kinds of finding.
+  await p.locator('#prompt-textarea').fill('please reply to priya.nair@northwind-logistics.co.in');
+  await p.locator('#send').click();
+  await p.waitForFunction(() => (window.__sent || []).length > 0, null, { timeout: 15000 })
+    .catch(() => {});
+  t.equal((await sent(p)).length, 1, 'a lone email address blocked the send');
+
+  await p.reload();
+  await waitReady(p, '#prompt-textarea');
+  await p.locator('#prompt-textarea').fill(`the key is ${KEY}`);
+  await p.locator('#send').click();
+  t.ok(await waitPanel(p), 'a credential did not stop the send');
+});
+
 // ──────────────────────────── the preview has to be the payload
 //
 // The heading says "what <host> will receive". Under it used to sit a count
@@ -1137,10 +1200,13 @@ await test('pasting and typing the same credential behave the same way', 'app-te
 });
 
 await test('a lone email does not stop a send in warn mode', 'app-textarea.html', async (p, t) => {
+  // The domain is not example.com on purpose. That one is excluded from the
+  // email detector as a documentation domain, so a test built on it asserts
+  // that a send went through when there was never a finding to stop it.
   // The other half of the table. A mode most people leave on has to stay
   // usable, and interrupting a send over one email address would make it
   // unusable. `low` is detected and shown on paste; it does not block.
-  await p.locator('#prompt-textarea').fill('please reply to priya.nair@example.com about this');
+  await p.locator('#prompt-textarea').fill('please reply to priya.nair@northwind-logistics.co.in about this');
   await p.locator('#send').click();
   await p.waitForFunction(() => (window.__sent || []).length > 0, null, { timeout: 15000 }).catch(() => {});
   t.equal((await sent(p)).length, 1, 'a lone email address blocked the send');

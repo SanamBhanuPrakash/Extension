@@ -1119,3 +1119,76 @@ whole-string path, which is correct there. Attachment rewriting is untouched.
 And a provider that keeps its text in a model the DOM does not reflect at all
 would defeat the map as surely as it defeats everything else — which is what
 `test/provider/run.mjs` exists to find out.
+
+---
+
+### 44. Three tiers, because severity answers the wrong question
+
+**Context.** The engine had grown broad enough to find emails, phone numbers,
+names, addresses, tax numbers, business context and secrets — and it
+interrupted for all of them the same way, because the only axis available was
+severity.
+
+Severity ranks how bad a finding is. The question somebody about to press Send
+actually has is different: *is this abusable by whoever receives it*. Those
+come apart, and the gap was making the product worse to use. A panel that
+fires equally for an AWS key and for the email address in "please draft a
+reply to priya@…" teaches people to dismiss it, and a dismissed warning
+protects nobody.
+
+**Decision.** `tierOf()` in `rules.js`, one tier per rule:
+
+| tier | rules | treatment |
+|---|---|---|
+| dangerous | 70 | credentials, payment instruments, government identity numbers — stops a send in any mode |
+| personal | 14 | emails, phones, names, addresses, tax and company numbers — said, offered an alias, not refused |
+| context | 18 | the judgement detectors — describes what the text is *about*, nothing to replace, never blocks |
+
+Enumerated rather than derived, because the mapping is not monotonic in either
+direction: `email` is `low` and personal, `us_ssn` is `critical` and dangerous,
+`gstin` is `medium` and personal, `pan_india` is `high` and dangerous. A unit
+test asserts every rule lands in exactly one tier, so adding a detector forces
+the question; an unknown rule is dangerous, never quiet.
+
+The mode table's stop column is by tier now rather than severity. "Warn stops
+`high`" was reasonable when it was written and grew into "warn stops
+twenty-five things including an IBAN and a passport number"; the tier says
+what was actually meant.
+
+---
+
+### 45. The alias offer leads where it helps
+
+**Context.** "Redact and continue" was always the primary action.
+
+For a credential that is correct. There is nothing to preserve about an API
+key, and the useful outcome is that it is gone.
+
+For personal data it was the wrong default, and it was working against the
+thing this product is best at. Redacting "Priya Nair at
+priya.nair@northwind-logistics.co.in" leaves the model guessing who it is
+writing to. An alias leaves it able to write the reply while never learning
+the address:
+
+    Draft a reply to Person_A at person_a@example.invalid about order 874321
+
+The task survives; the identity does not. That is the only transformation here
+that gives something back rather than only taking something away, and burying
+it behind a secondary button meant most people would never find it.
+
+**Decision.** When nothing in the message is abusable and an alias is
+possible, "Use aliases and continue" is the primary button and Enter does
+that. With anything dangerous present, redaction leads as before — a
+pseudonymised API key does not exist.
+
+**What this is not.** It is not a new detector and not a new screen. The
+pseudonymiser, the tiers and the panel all already existed; what changed is
+which of two existing buttons is in front. The retention argument for this
+product is that somebody keeps it installed because the task still worked
+after Chhanni touched it, and a button they never saw cannot do that.
+
+**Found while testing it:** `example.com` is deliberately excluded from the
+email detector as a documentation domain, so the first version of "a lone
+email does not block the send" asserted that a send went through when there
+had never been a finding to stop it. A test that passes because its input
+produces nothing is worse than no test.

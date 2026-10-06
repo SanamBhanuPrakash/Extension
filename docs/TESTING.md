@@ -36,7 +36,7 @@ npm install --no-save playwright
 npx playwright install chromium
 ```
 
-Thirty-nine cases run. They assert on what a mock provider *received*, never on
+Forty-three cases run. They assert on what a mock provider *received*, never on
 whether a panel appeared — "the panel was shown" and "the key did not leave"
 are different claims and only the second one is the product.
 

@@ -3,9 +3,39 @@ import assert from 'node:assert/strict';
 import { scan, mask, fingerprint, summarise } from '../src/detect.js';
 import { redact, redactReversible, restore } from '../src/redact.js';
 import { luhn, verhoeff, aadhaar, iban, pan, ssn, githubTokenChecksum, looksRandom } from '../src/checksums.js';
+import { RULES, tierOf, tierOfId, TIERS } from '../src/rules.js';
 
 const ids = (text, policy) => scan(text, policy).findings.map((f) => f.ruleId);
 const has = (text, id) => ids(text).includes(id);
+
+// ------------------------------------------------------------------- tiers
+test('every rule lands in exactly one tier', () => {
+  // A rule that falls through the tier table would be treated as dangerous,
+  // which is the safe default and also a silent bug: it would stop sends in
+  // warn mode for something nobody classified. Asserted so adding a detector
+  // forces the question.
+  for (const rule of RULES) {
+    assert.ok(TIERS.includes(tierOf(rule)), `${rule.id} has no tier`);
+  }
+});
+
+test('the tier is not the severity', () => {
+  // The whole reason tiers exist: the mapping is not monotonic, so deriving
+  // one from the other would be wrong in both directions.
+  assert.equal(tierOfId('email'), 'personal');          // low
+  assert.equal(tierOfId('us_ssn'), 'dangerous');        // critical
+  assert.equal(tierOfId('gstin'), 'personal');          // medium
+  assert.equal(tierOfId('pan_india'), 'dangerous');     // high
+  assert.equal(tierOfId('negotiation_position'), 'context');
+  assert.equal(tierOfId('aws_access_key_id'), 'dangerous');
+  assert.equal(tierOfId('person_name'), 'personal');
+  assert.equal(tierOfId('payment_card'), 'dangerous');
+});
+
+test('an unknown rule is dangerous, never quiet', () => {
+  assert.equal(tierOfId('a_detector_that_does_not_exist'), 'dangerous');
+  assert.equal(tierOf(null), 'dangerous');
+});
 
 // --------------------------------------------------------------- checksums
 test('luhn accepts valid cards and rejects transposed digits', () => {
