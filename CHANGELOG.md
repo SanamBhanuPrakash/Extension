@@ -2,6 +2,160 @@
 
 ## Unreleased
 
+### The proof machinery had the defect it was built to catch
+
+The previous entry shipped a plan — a system design, a V1 contract, a provider
+matrix, a finite roadmap, and `scripts/gate.js` as an executable definition of
+done. The argument for making it a script was that prose cannot end an audit
+loop, because prose is not run.
+
+The plan was then audited, and four of its own criteria were not run either.
+
+**The provider criterion was a constant.** `gate('PROVIDER', …)` returned
+`blocked` without opening `docs/PROVIDERS.md`. Anybody could have certified all
+five providers and the gate would still have refused, until a human edited the
+gate — so the gate was never the authority on whether the product could ship.
+A human editing the gate was. It parses the matrix now, counts verdicts, and
+can reach `PASS`; every branch of it was exercised against a filled-in matrix,
+a `FAIL` cell, an undated pass and a matrix with its markers removed.
+
+**The third-party benchmark criterion was `existsSync('/tmp/claude-0/wild')`.**
+It checked that a directory was present on whichever machine ran it, and then
+reported the alarm rate as checked. It runs `bench/wild.js` now, reads the rate
+out of its output, holds it to 1%, and fails below 10,000 files, because a rate
+measured on a few hundred files is not a rate. Current result: **0.39% of
+88,166 files**.
+
+**The provider harness could pass by observing nothing.** With no account
+signed in, or an API matcher that did not match that provider's traffic, zero
+requests were seen and zero of them contained the sentinel — and "no request
+contained the secret" is true of a page that never sent anything. `PASS` now
+requires a control message to put a request on the wire first. If a harmless
+"what is the capital of France" produces no observable request, the harness
+cannot see this provider and the cell is `NOT TESTED`. Verified with no network
+at all: `0 PASS, 0 FAIL, 10 NOT TESTED`.
+
+**The matrix and the gate had no agreement.** The verdict vocabulary is now one
+list in the harness, and `check-docs.js` compares the harness's V1 path set
+against the matrix's markers — and counts the rows the gate can actually
+select. Both of the gate's matrix criteria pick rows with `/^\| [a-z]/`, so a
+path named with a capital letter would have been invisible to them, including
+to the scan that fails the build when a cell says `FAIL`. A leak the gate
+cannot see is worse than one it reports.
+
+**And the harness destroyed the document it wrote into.** Found while checking
+that the gate could read the harness's own output: `--matrix` replaced the
+whole file, so a real certification run would have deleted the five sections
+explaining what a cell means, which paths V1 promises, and why a pass expires
+— while `check-docs.js` kept reporting that the documentation agreed with the
+code, because every machine-readable invariant happened to live in the part
+that survived. It rewrites the `## The matrix` section in place now, refuses a
+file that has no such section instead of overwriting it, honours an absolute
+`--matrix` path instead of silently reinterpreting it under the repository
+root, and a guard asserts the other four sections are still there.
+
+Each of the four is the same failure: a surface claiming a stronger state than
+it has. That is what this product exists to catch when a composer does it.
+
+### The gate printed PRE-PRODUCTION and exited 0
+
+Above a document that said the exit code was the answer to "can this ship". It
+was the answer to "did anything fail", and those differ exactly when a claim is
+unproven rather than broken — which is the state this repository has been in
+for its whole life.
+
+Three modes now, asking three different questions:
+
+    node scripts/gate.js            did I break anything          BLOCKED → 0
+    node scripts/gate.js --full     … browser and perf included    BLOCKED → 0
+    node scripts/gate.js --release   can this ship                 BLOCKED → 2
+
+`0` the question was answered yes, `1` something is broken, `2` nothing is
+broken and something is unproven. `--release` implies `--full`. CI keeps
+running the default mode, because a criterion this machine cannot check is not
+a regression and failing every push over it would train everybody to ignore
+the gate.
+
+### V1 was waiting on work the roadmap assigned to V1.x
+
+`V1-CONTRACT.md` said V1 ships when all five providers are certified.
+`ROADMAP.md` said V1.x delivers "all five providers certified across all ten
+paths". The same sentence, so provider certification was both the last blocker
+of V1 and the main content of the release after it — and V1 was waiting on
+forty drivers against five products that redesign without notice. A release
+criterion that cannot be met is not a high standard, it is an unfinishable
+release with a high standard written on it.
+
+The boundary is drawn where the evidence changes kind. **V1 is ten cells:**
+five providers across the two paths marked `(V1)` in the matrix — paste, and
+typed plus Enter — which are how every user sends and which the harness drives
+with no provider-specific knowledge. **V1.x is the other forty,** plus a
+re-certification cadence, and it has no exit; the roadmap now says so. A `FAIL`
+in any cell still fails the gate outright, V1 path or not: a secret reaching a
+provider is the product failing, and a roadmap does not make the leak later.
+
+### `--verify` blamed the build for an edited file
+
+`scripts/package.js --verify` compares a fresh build against the zip already
+sitting in `dist/`. If the tree was rebuilt since that zip was written, the two
+are not the same inputs — and the script reported "the package is not
+reproducible", accusing the build of non-determinism for the ordinary act of
+editing a file. The gate never saw it, because the gate writes first and
+verifies second; a person running `--verify` by hand after an edit always did.
+It now compares timestamps and says which of the two findings it actually has.
+A verification step that reports the wrong cause is worse than one that reports
+nothing, in the one script that is supposed to be the authority on whether the
+upload matches the commit.
+
+### Four invariants that nothing executed
+
+- **Every detector lands in exactly one tier.** `tierOf()` ended
+  `return 'dangerous'`, so an unclassified detector silently became dangerous
+  and the test asserting full coverage could not fail. `classify()` returns
+  `null` now and the test asserts `unclassifiedRules()` is empty, while
+  `tierOf()` still fails closed at runtime — the invariant can fail in the
+  suite without failing open in the product.
+- **The allowlist is never synchronised.** `popup.js` declared its own
+  `DEFAULTS` and wrote through `chrome.storage.sync` directly, bypassing the
+  module that owns the split. It imports `readPolicy`/`writePolicy` now.
+- **The migration moves the allowlist onto the device.** It reported success
+  before the writes and regardless of whether the synchronised copy was
+  deleted — so the options page could say the data had been brought back while
+  a copy of it was still on Google's servers. It reads both stores back now,
+  and says which half failed.
+- **Two permissions, SHA-256 fingerprints.** `THREAT-MODEL.md` said three
+  permissions and FNV-1a, `PUBLISHING.md` said three, and `PRIVACY.md` put the
+  allowlist in `sync`. All four had been true once. `check-docs.js` now greps
+  the permission count, the allowlist's storage area and the hash out of the
+  prose and compares them to the manifest and the source.
+
+No feature was added in this pass, and one user-visible behaviour changed: when
+the migration cannot delete the synchronised copy, the options page says so
+instead of saying the opposite.
+
+The storage split now has a unit suite of its own, `test/policy.test.js`,
+against a fake storage area that can be told to lie. The half-failure that
+matters — the local write persists, the deletion silently does not — is
+unreachable in a real profile, because every context that sees the change
+races to perform the migration with the real API, and that is exactly the
+branch where the options page would have told somebody their customer's
+address had stopped being replicated while a copy of it was still on Google's
+servers. All nine cases were run against the previous code first: three fail on
+the unverified migration, one on the lost notice.
+
+Every guard added here was run against the drift it was written for and
+confirmed to fail before it was confirmed to pass. The synchronised-storage
+guard took three attempts to get there, and the two failures are the lesson of
+this pass in one regex. The first used `[^.]{0,120}` as a "same sentence"
+window, which can never span `chrome.storage.sync` because that string is full
+of dots. The second widened the window and excluded any containing a phrase
+like "never synchronised" — wide enough that a legitimate neighbouring
+sentence switched the check off. Both passed the test drift. Prose cannot be
+policed by proximity, so `PRIVACY.md` now states the area in one fixed shape
+and that area is compared to `LOCAL_FIELDS` in the code.
+
+- 148 tests, 44 browser cases, 19 gate criteria, and 49 decision records.
+
 ### A lone email address was treated like an API key
 
 The scanner had grown broad enough to find emails, phone numbers, names,

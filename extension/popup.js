@@ -1,7 +1,7 @@
 import { read, clear, breakdown, distinctSecrets, ago } from './store.js';
+import { DEFAULTS as POLICY_DEFAULTS, readPolicy, writePolicy } from './policy.js';
 
 const $ = (id) => document.getElementById(id);
-const DEFAULTS = { mode: 'warn', disabled: [], allow: [] };
 
 /**
  * Which sites are covered, read from the manifest rather than restated here.
@@ -277,10 +277,22 @@ function renderRecent(events) {
 }
 
 async function render() {
-  const [state, tab, stored] = await Promise.all([
-    read(), currentTab(), chrome.storage.sync.get('policy'),
+  /**
+   * Through `policy.js`, not `storage.sync` directly.
+   *
+   * This read `chrome.storage.sync.get('policy')` and wrote the whole object
+   * straight back, which is the architecture `policy.js` was introduced to
+   * replace. Today that happens not to leak the allowlist, because migration
+   * has already removed it from `sync` and the popup never sees it — but
+   * "happens not to" is the whole problem. Two write paths with two different
+   * ideas of which fields may be replicated is exactly the drift that put the
+   * allowlist in a Google-synchronised store in the first place, and the one
+   * that got it wrong would be the one nobody read.
+   */
+  const [state, tab, own] = await Promise.all([
+    read(), currentTab(), readPolicy(),
   ]);
-  const policy = { ...DEFAULTS, ...(stored.policy || {}) };
+  const policy = { ...POLICY_DEFAULTS, ...own.policy };
   const on = policy.mode !== 'off';
 
   const { host, watching } = await renderCoverage(tab, on);
@@ -301,7 +313,7 @@ async function render() {
   const mode = $('mode');
   mode.value = policy.mode;
   mode.onchange = async () => {
-    await chrome.storage.sync.set({ policy: { ...policy, mode: mode.value } });
+    await writePolicy({ mode: mode.value }, policy);
     render();
   };
 }

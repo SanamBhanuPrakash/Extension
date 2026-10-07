@@ -42,6 +42,23 @@ export const LOCAL_FIELDS = ['allow'];
 const SYNC_KEY = 'policy';
 const LOCAL_KEY = 'policyLocal';
 
+/**
+ * The outcome of the migration, kept until somebody has been told.
+ *
+ * The migration runs on first read from whichever surface opens first. Once
+ * the popup started routing through this module — which it must, so that two
+ * write paths cannot disagree about which fields may be replicated — the
+ * popup became the likely first reader, and the popup does not show this
+ * notice. The options page did, and would then find nothing stranded and say
+ * nothing.
+ *
+ * Silently repairing a privacy defect is not the same as repairing it.
+ * Somebody who typed a customer's address into the allowlist is owed the fact
+ * that it had been leaving the device and has stopped — or, worse news, that
+ * it has not. So the outcome outlives the call that produced it.
+ */
+const NOTICE_KEY = 'policyMigrationNotice';
+
 const pick = (obj, keys) => Object.fromEntries(
   Object.entries(obj || {}).filter(([k]) => keys.includes(k)));
 const omit = (obj, keys) => Object.fromEntries(
@@ -50,9 +67,12 @@ const omit = (obj, keys) => Object.fromEntries(
 /**
  * The person's own settings, from both areas, migrating if needed.
  *
- * @returns {Promise<{policy: object, migrated: string[]}>} `migrated` names
- *   the fields that were moved out of sync by this call, so the caller can
- *   say so rather than quietly fixing it.
+ * @returns {Promise<{policy: object, migrated: string[], migrationFailed: string|null}>}
+ *   `migrated` names the fields this call moved out of sync **and verified
+ *   gone**, so the caller can say so rather than quietly fixing it.
+ *   `migrationFailed` is set instead when the move was attempted and could
+ *   not be confirmed, because telling somebody their data has stopped being
+ *   replicated when it has not is worse than saying nothing.
  */
 export async function readPolicy() {
   let synced = {};
@@ -60,27 +80,79 @@ export async function readPolicy() {
   try { synced = (await chrome.storage.sync.get(SYNC_KEY))[SYNC_KEY] || {}; } catch { /* first run */ }
   try { local = (await chrome.storage.local.get(LOCAL_KEY))[LOCAL_KEY] || {}; } catch { /* first run */ }
 
-  // Anything sensitive still in sync is moved out, not merely ignored.
+  /**
+   * Anything sensitive still in sync is moved out, not merely ignored.
+   *
+   * `migrated` is only populated once **both** writes have returned: the
+   * local copy persisted, and the synchronised copy deleted. The first
+   * version pushed the field name before either had happened, so a quota
+   * error or a storage failure left the options page saying "it has been
+   * moved to this device only, and the synchronised copy has been deleted"
+   * about values still sitting in a replicated store.
+   *
+   * That is the same defect the architecture forbids — a claim stronger than
+   * what was verified — committed by the code that exists to fix it. A
+   * failure is reported as a failure now, and the caller is told the
+   * synchronised copy is still there.
+   */
   const stranded = LOCAL_FIELDS.filter((f) => Array.isArray(synced[f]) && synced[f].length);
   const migrated = [];
+  let migrationFailed = null;
   if (stranded.length) {
     const moved = { ...local };
     for (const f of stranded) {
       // The local copy wins if it already has values: it is the newer home.
       if (!Array.isArray(moved[f]) || !moved[f].length) moved[f] = synced[f];
-      migrated.push(f);
     }
     try {
       await chrome.storage.local.set({ [LOCAL_KEY]: moved });
       await chrome.storage.sync.set({ [SYNC_KEY]: omit(synced, LOCAL_FIELDS) });
+      // Read both back. A `set` that resolved is not the same claim as a
+      // store that holds what was asked of it, and this is the one place in
+      // the product where the difference is a privacy outcome.
+      const checkLocal = (await chrome.storage.local.get(LOCAL_KEY))[LOCAL_KEY] || {};
+      const checkSync = (await chrome.storage.sync.get(SYNC_KEY))[SYNC_KEY] || {};
+      const persisted = stranded.every((f) => Array.isArray(checkLocal[f]) && checkLocal[f].length);
+      const deleted = LOCAL_FIELDS.every((f) => !Array.isArray(checkSync[f]) || !checkSync[f].length);
+      if (persisted && deleted) {
+        migrated.push(...stranded);
+        local = moved;
+      } else {
+        migrationFailed = !deleted
+          ? 'the synchronised copy could not be removed'
+          : 'the local copy could not be saved';
+        local = moved;            // the values still work this session
+      }
+    } catch (err) {
+      migrationFailed = `storage refused the move (${String(err && err.message).slice(0, 60)})`;
       local = moved;
-    } catch { /* quota or no storage; the merge below still returns the values */ }
+    }
+  }
+
+  // Record it for whoever shows the notice, and read back any record left by
+  // an earlier call in another surface. This call's own result wins.
+  let notice = {};
+  try { notice = (await chrome.storage.local.get(NOTICE_KEY))[NOTICE_KEY] || {}; } catch { /* none */ }
+  if (migrated.length || migrationFailed) {
+    notice = { fields: migrated, failed: migrationFailed, at: Date.now() };
+    try { await chrome.storage.local.set({ [NOTICE_KEY]: notice }); } catch { /* best effort */ }
   }
 
   return {
     policy: { ...DEFAULTS, ...omit(synced, LOCAL_FIELDS), ...pick(local, LOCAL_FIELDS) },
-    migrated,
+    migrated: migrated.length ? migrated : (notice.fields || []),
+    migrationFailed: migrationFailed || notice.failed || null,
   };
+}
+
+/**
+ * Forget the migration notice, once somebody has actually been shown it.
+ *
+ * Only the surface that displays it calls this. A failed migration is left in
+ * place deliberately: it describes a condition that is still true.
+ */
+export async function clearMigrationNotice() {
+  try { await chrome.storage.local.remove(NOTICE_KEY); } catch { /* nothing to forget */ }
 }
 
 /** Write a patch, routing each field to the area it belongs in. */

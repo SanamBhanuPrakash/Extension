@@ -198,19 +198,83 @@ const PERSONAL_IDS = new Set([
 
 export const TIERS = ['dangerous', 'personal', 'context'];
 
-/** @param {object} rule a RULES entry @returns {'dangerous'|'personal'|'context'} */
-export function tierOf(rule) {
-  if (!rule) return 'dangerous';              // unknown is never the quiet tier
-  if (rule.advisory || rule.category === 'context') return 'context';
-  if (rule.category === 'prose') return 'personal';   // person_name, postal_address
+/**
+ * Which category means which tier, enumerated so a new one cannot default.
+ *
+ * This is the part that makes the invariant enforceable. The first version
+ * ended `return 'dangerous'` — fail-closed at runtime, which is right, and
+ * therefore a classification that could never fail, which is useless as an
+ * invariant. The test asserted `TIERS.includes(tierOf(rule))` and could not
+ * fail for any rule at all, including one nobody had classified.
+ *
+ * Fail-closed and "explicitly classified" are different properties and the
+ * product needs both. So `classify()` answers `null` when it has no rule for
+ * something, `tierOf()` turns that into `dangerous` for the runtime, and the
+ * test asserts `classify()` is never `null`. Adding a detector in a new
+ * category now fails the build until somebody decides which tier it is in.
+ */
+const CATEGORY_TIER = {
+  cloud: 'dangerous',
+  source: 'dangerous',
+  ai: 'dangerous',
+  payments: 'dangerous',
+  comms: 'dangerous',
+  platform: 'dangerous',
+  generic: 'dangerous',
+  // Unreachable today: the one injection rule is advisory, so it answers
+  // `context` above. It is here for the non-advisory injection detector
+  // somebody will eventually add, and `dangerous` is the fail-closed
+  // answer for it. Note that the "every rule is classified" test cannot
+  // catch a *dead* entry here, only a missing one.
+  injection: 'dangerous',
+  // Identity and financial numbers are dangerous unless PERSONAL_IDS says
+  // otherwise: an SSN authorises things, a company VAT number does not.
+  india: 'dangerous',
+  global: 'dangerous',
+  context: 'context',
+  prose: 'personal',
+};
+
+/**
+ * The tier a rule explicitly belongs to, or `null` if nothing classified it.
+ *
+ * @param {object} rule a RULES entry
+ * @returns {'dangerous'|'personal'|'context'|null}
+ */
+export function classify(rule) {
+  if (!rule || typeof rule.category !== 'string') return null;
+  if (rule.advisory) return 'context';
   if (PERSONAL_IDS.has(rule.id)) return 'personal';
-  return 'dangerous';
+  const byCategory = CATEGORY_TIER[rule.category];
+  return byCategory || null;
+}
+
+/**
+ * The tier to act on. Fail-closed: anything unclassified is dangerous, so a
+ * detector nobody has placed stops a send rather than passing quietly.
+ *
+ * @param {object} rule a RULES entry
+ * @returns {'dangerous'|'personal'|'context'}
+ */
+export function tierOf(rule) {
+  return classify(rule) || 'dangerous';
 }
 
 /** The tier of a finding, which carries a ruleId rather than a rule. */
 export function tierOfId(ruleId) {
   return tierOf(RULES_BY_ID.get(ruleId) || null);
 }
+
+/**
+ * Rules nothing has classified. Empty, or the build fails.
+ *
+ * Every rule, synthetic ones included. The first version skipped them, which
+ * narrowed the invariant to no purpose: `person_name`, `postal_address` and
+ * `prompt_injection` all classify, and a synthetic detector added in an
+ * unclassified category would have slipped through the one check that exists
+ * to stop exactly that.
+ */
+export const unclassifiedRules = () => RULES.filter((r) => classify(r) === null);
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const B64_INDEX = new Int8Array(128).fill(-1);

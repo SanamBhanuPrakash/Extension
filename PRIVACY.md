@@ -39,14 +39,26 @@ silent.
 
 ## What it stores
 
-Two things, both in your own browser profile:
+Three things, all in your own browser profile:
 
-1. **Your settings** (`chrome.storage.sync`) — which detectors are on, how
-   aggressively to interrupt, and any values you have allowlisted. If you are
-   signed into your browser, your browser may sync these between your own
-   devices. Chhanni cannot read them from anywhere else.
+1. **Your preferences** (`chrome.storage.sync`) — which detectors are on and
+   how aggressively to interrupt. If you are signed into your browser, your
+   browser may sync these between your own devices. They say how cautious you
+   are and nothing about what you work on.
 
-2. **A local history of what was caught** (`chrome.storage.local`) — up to 120
+2. **Your allowlist** (`chrome.storage.local`) — the values you have told
+   Chhanni never to flag. This is kept **on this device only and is never
+   synchronised**, because it is the one setting made entirely of strings you
+   typed *because* they are sensitive: a customer's address, an internal
+   codename, a shared test credential.
+
+   Earlier versions put the allowlist in `chrome.storage.sync` along with
+   everything else, which meant your browser replicated it. That was wrong and
+   is fixed: if your profile had already synced one, Chhanni moves it to local
+   storage on first run, deletes the synchronised copy, and tells you on the
+   settings page that it did.
+
+3. **A local history of what was caught** (`chrome.storage.local`) — up to 120
    recent detections. Each entry holds the detector's name, the severity, the
    site, the time, a **masked** preview (for example `AKI************PLE`), and
    a fingerprint. **The actual secret is never stored.** This history is

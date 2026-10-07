@@ -65,11 +65,13 @@ which is why only masked previews are ever rendered.
 ### T3 — Chhanni itself exfiltrates
 
 *Mitigated structurally, and tested.* The manifest requests exactly one
-permission, `storage`. There is no `host_permissions` entry granting fetch
-access, no background service worker, and no remote code. A test in the suite
-fails the build if any shipped module references `fetch`, `XMLHttpRequest`,
-`sendBeacon`, `WebSocket` or `EventSource`, and a second test asserts
-`permissions === ['storage']`.
+permissions: `storage`, for your settings, and `scripting`, used only when you
+press "Watch this site too" in the popup. Neither grants network access. There
+is no `host_permissions` entry granting fetch access, no background service
+worker, and no remote code. CI fails the build if any shipped module
+references `fetch`, `XMLHttpRequest`, `sendBeacon`, `WebSocket` or
+`EventSource`, and `scripts/gate.js` asserts the permission list is exactly
+those two.
 
 This is the threat most worth being paranoid about: the user is handing their
 credentials to a credential scanner. The defence has to be checkable by a
@@ -81,7 +83,9 @@ dependencies.
 *Partially mitigated.* Nothing stops someone forking this and adding a network
 call. What the design does is ensure the fork cannot ship anything useful by
 accident: findings that leave the engine carry `preview` (masked) and
-`fingerprint` (one-way FNV-1a), the CLI's `--json` output strips `match`
+`fingerprint` (SHA-256 over a per-install random salt, truncated to 128 bits —
+FNV-1a in an early version, which had no collision resistance), the CLI's
+`--json` output strips `match`
 entirely, and the history store never receives a raw secret. A naive fork that
 POSTs its data collects nothing usable.
 

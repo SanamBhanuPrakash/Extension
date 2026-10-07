@@ -26,7 +26,7 @@ checks the mechanical half of it.
 | 13 | local-first privacy architecture | done | no `fetch`, two permissions, allowlist local-only with migration |
 | 14 | deterministic packaging | done | `scripts/package.js --verify`; both packages byte-identical across builds |
 | 15 | documented limitations | done | `LIMITATIONS.md`, 23 sections, gated by `check-docs.js` |
-| 16 | **provider compatibility evidence** | **NOT MET** | `test/provider/run.mjs` exists and measures the right thing; no provider is certified. **This is the V1 blocker.** |
+| 16 | **provider compatibility evidence** | **NOT MET** | `test/provider/run.mjs` exists and measures the right thing; 0 of the 10 `(V1)` cells in `PROVIDERS.md` are certified. **This is the V1 blocker.** |
 
 ## Explicitly not V1
 
@@ -55,11 +55,35 @@ release.
 V1 ships when:
 
 1. Every row above reads `done`.
-2. `node scripts/gate.js --full` reports no `FAIL`.
+2. `node scripts/gate.js --release` exits `0`.
 3. `docs/PROVIDERS.md` carries a dated certification for all five providers
-   with no `FAIL` cell on a supported path.
+   on **both paths marked `(V1)`** — paste, and typed plus Enter — and no
+   `FAIL` cell anywhere in the matrix.
 4. Every `BLOCKED` criterion in the gate is either resolved or recorded in
    `RELEASE-GATE.md` as an accepted residual risk with a reason.
 
 Point 3 is the only one not currently satisfiable from this machine, and it is
 the whole of the remaining distance.
+
+### Why ten cells and not fifty
+
+The matrix has fifty. V1 asks for ten, and the line is drawn where it is for a
+reason that is not convenience.
+
+V1 asks one question of a real provider: **does the boundary work at all?**
+Paste and typed-plus-Enter answer it. They are how every user actually sends,
+and the harness can drive them on any provider without provider-specific
+knowledge, so a `PASS` there is evidence about the product rather than about a
+driver somebody wrote for one site.
+
+The other forty cells answer a different question — *does it keep working
+across every way a provider can be driven, after each redesign* — and each
+needs a driver per provider per path. That is `V1.x` in `ROADMAP.md`, and it
+is by construction never finished: these are other people's products and they
+change without notice. A V1 criterion that waits for it is a V1 that never
+ships, which is not a higher standard, just a stuck one.
+
+What does **not** move across that line: a `FAIL` in any cell fails the gate
+outright. A secret reaching a provider is the product failing, and the fact
+that a roadmap assigns that path to a later release does not make the leak
+later.

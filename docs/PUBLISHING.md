@@ -66,7 +66,7 @@ because most of what reviewers scrutinise does not apply:
 | Manifest V3 | Yes |
 | Single purpose, clearly stated | Yes — detect sensitive data in a prompt before it is sent |
 | Minimum permissions | `storage` only. No `<all_urls>`, no `webRequest`, no `tabs` beyond the popup's active-tab query |
-| Justify every permission in the listing | One permission, one sentence: it stores your settings |
+| Justify every permission in the listing | Two: `storage` stores your settings, `scripting` registers the same content script on a site you add yourself. Neither grants network access |
 | No remote code | None. No CDN, no `eval`, no hosted script — every byte ships in the package |
 | Privacy policy URL | [`PRIVACY.md`](../PRIVACY.md) — publish it at a stable URL and link it |
 | Data-use disclosure | "Does not collect or transmit user data" on every category |

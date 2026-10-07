@@ -152,6 +152,36 @@ for (const target of TARGETS) {
   if (verify && existsSync(out)) {
     const was = createHash('sha256').update(readFileSync(out)).digest('hex');
     if (was !== digest) {
+      /**
+       * Two different findings wear the same symptom, and only one of them is
+       * a defect.
+       *
+       * `--verify` compares this build against the zip already on disk. If
+       * `dist/<target>/` has been rebuilt since that zip was written, the
+       * inputs are not the same inputs, and calling the result
+       * "not reproducible" accuses the build of non-determinism for the
+       * ordinary act of editing a file. A verification step that reports the
+       * wrong cause is worse than one that reports nothing — this one is
+       * supposed to be the authority on whether the upload matches the
+       * commit.
+       *
+       * `scripts/gate.js` writes first and verifies second, so it never sees
+       * this; a person running `--verify` by hand after an edit always does.
+       */
+      const zipAt = statSync(out).mtimeMs;
+      const newest = (at) => readdirSync(at, { withFileTypes: true })
+        .reduce((max, e) => Math.max(max, e.isDirectory()
+          ? newest(join(at, e.name))
+          : statSync(join(at, e.name)).mtimeMs), 0);
+      if (newest(dir) > zipAt) {
+        console.error(red(`${target}: dist/${target} was rebuilt after the zip beside it was written.`));
+        console.error('  So this compares two different trees, which says nothing about whether');
+        console.error('  the build is reproducible. Write the package first, then verify:');
+        console.error(`\n    node scripts/package.js && node scripts/package.js --verify\n`);
+        failed = true;
+        results.push({ target, out: relative(root, out), count, size: bytes.length, digest: `${digest}  (NOT WRITTEN)` });
+        continue;
+      }
       console.error(red(`${target}: the package is not reproducible — ${was.slice(0, 16)} then, ${digest.slice(0, 16)} now`));
       // Deliberately leave the existing file alone. A verification step that
       // overwrites the artifact it has just found to differ destroys the

@@ -42,10 +42,15 @@ happened proves nothing, and a panel that looked correct proves less.
 Measured: **never**. Sentinel: `AKIAIOSFODNN7EXAMPLE` (AWS's published
 documentation key).
 
+The two rows marked `(V1)` are the ones V1 must certify: they are how every
+user sends, and they are drivable without provider-specific knowledge. The
+other eight are V1.x, and need a per-provider driver each. `scripts/gate.js`
+reads that marker, so this is the boundary and not a note about it.
+
 | path | ChatGPT | Claude | Gemini | Copilot | Perplexity |
 |---|---|---|---|---|---|
-| paste | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
-| type + Enter | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
+| paste (V1) | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
+| type + Enter (V1) | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
 | type + click Send | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
 | programmatic click | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
 | form submit | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
@@ -59,6 +64,24 @@ Two of the ten paths have drivers in the harness today — paste, and typed plus
 Enter. The other eight need per-provider drivers, because guessing at somebody
 else's re-render behaviour produces a cell that reads `PASS` when in truth
 nothing happened.
+
+## What V1 needs from this file, and what it does not
+
+V1 asks one question of a real provider: **does the boundary work at all?**
+Ten cells answer it — five providers across the two `(V1)` rows. Until all
+ten read `PASS` (or `UNSUPPORTED`, for a path a provider genuinely lacks),
+`scripts/gate.js` reports the provider criterion `BLOCKED` and V1 cannot
+ship.
+
+The remaining forty cells are V1.x. They are not a lower standard; they are a
+different question — *does it keep working across every way a provider can be
+driven, after each redesign* — and answering it needs a driver per provider
+per path. Holding V1 for them would make the release criterion permanent,
+because V1.x is by construction never finished.
+
+One rule crosses the boundary: a `FAIL` in **any** cell fails the gate
+outright. A secret reaching a provider is the product failing, and no roadmap
+boundary excuses it.
 
 ## A pass expires
 

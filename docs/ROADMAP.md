@@ -56,18 +56,23 @@ click, and the task still works.
 tool arguments, agent actions, any backend, any account.
 
 **Exit.** The sixteen rows of `V1-CONTRACT.md` read `done`, and
-`scripts/gate.js --full` reports no `FAIL`. One row does not: provider
-certification. That single row is the distance to V1.
+`scripts/gate.js --release` exits `0`. One row does not: provider
+certification — the ten cells marked `(V1)` in `PROVIDERS.md`, which are the
+two send paths every user takes, across five providers. That single row is the
+distance to V1.
 
 ---
 
 ### V1.x — reliability, and keeping up with five moving products
 
 **Problem.** AI frontends change their composers without notice. A dated
-`PASS` is evidence about that date and nothing else.
+`PASS` is evidence about that date and nothing else. V1 proves the boundary
+works on the two paths everybody uses; it does not prove the boundary survives
+a redesign, or holds on the eight paths a determined user can still reach.
 
-**Capability.** Drivers for all ten paths in `test/provider/run.mjs`; the
-provider adapter boundary made real at the first point a provider needs
+**Capability.** Drivers for the other eight paths in `test/provider/run.mjs`
+— the forty cells V1 does not ask for — plus a re-certification schedule, and
+the provider adapter boundary made real at the first point a provider needs
 behaviour that cannot be expressed as a shape (`SYSTEM-DESIGN.md` §6).
 
 **User value.** It keeps working after ChatGPT redesigns.
@@ -75,10 +80,18 @@ behaviour that cannot be expressed as a shape (`SYSTEM-DESIGN.md` §6).
 **Security invariant.** Provider-specific knowledge never enters the engine.
 
 **Not included.** New representations. No new detectors unless a measured gap
-demands one.
+demands one. Nothing V1 already certified: re-running the `(V1)` cells is
+maintenance, not a V1.x capability.
 
-**Exit.** All five providers certified across all ten paths, re-certified on a
-schedule rather than on a hunch.
+**Exit.** This generation has no exit, and saying so is the point. Forty cells
+and a re-certification cadence are a standing obligation against five products
+that keep moving, not a milestone that closes. V1.x is *current* when every
+cell in `PROVIDERS.md` is either `PASS`, `UNSUPPORTED`, or newer than the
+provider's last visible redesign — a condition that can be true this month and
+false next month without anything in this repository changing.
+
+That is precisely why V1's exit criteria stop at ten cells. A release whose
+exit condition is a moving target does not ship.
 
 ---
 

@@ -1170,6 +1170,41 @@ await test('an allowlist already in storage.sync is moved out of it', 'app-texta
   t.ok(after.migrated.includes('allow'), 'the move happened silently, with nothing to report');
 });
 
+await test('the person is still told after another surface did the migration', 'app-textarea.html', async (p, t, ctx) => {
+  // The migration runs on first read, from whichever surface opens first —
+  // and in this fixture that is the content script in the page behind us,
+  // which is the point. Once the popup started routing through `policy.js`
+  // (it must, so two write paths cannot disagree about which fields may be
+  // replicated), the surface that performs the repair stopped being the
+  // surface that reports it. The options page would find nothing stranded and
+  // say nothing, and repairing a privacy defect silently is not repairing it.
+  const stranded = 'contact@acquisition-target.example';
+  const seen = await onExtensionPage(ctx, async (value) => {
+    const { readPolicy, clearMigrationNotice } = await import('./policy.js');
+    await clearMigrationNotice();
+    await chrome.storage.sync.set({ policy: { mode: 'warn', disabled: [], allow: [value] } });
+
+    // Wait for *somebody* to migrate it — this page, the content script, the
+    // service worker. Which one is deliberately not asserted.
+    const gone = async () => !JSON.stringify(await chrome.storage.sync.get(null)).includes(value);
+    for (let i = 0; i < 100 && !(await gone()); i++) {
+      await readPolicy();
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    const later = await readPolicy();        // the options page, opening afterwards
+    await clearMigrationNotice();            // having shown the notice
+    const next = await readPolicy();         // and the next time it opens
+    return { migrated: await gone(), later: later.migrated, next: next.migrated };
+  }, stranded);
+
+  t.ok(seen.migrated, 'the allowlist was never migrated out of sync at all');
+  t.ok(seen.later.includes('allow'),
+    'a surface that did not perform the move is told nothing, so nobody is told');
+  t.equal(JSON.stringify(seen.next), '[]',
+    'the notice is shown forever, which trains people to ignore it');
+});
+
 // ───────────────────────────── the modes, as one table, on both paths
 //
 // `scanPolicy()` put everything but `critical` into `warn`, and

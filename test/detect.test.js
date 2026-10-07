@@ -3,20 +3,33 @@ import assert from 'node:assert/strict';
 import { scan, mask, fingerprint, summarise } from '../src/detect.js';
 import { redact, redactReversible, restore } from '../src/redact.js';
 import { luhn, verhoeff, aadhaar, iban, pan, ssn, githubTokenChecksum, looksRandom } from '../src/checksums.js';
-import { RULES, tierOf, tierOfId, TIERS } from '../src/rules.js';
+import { RULES, classify, tierOf, tierOfId, TIERS, unclassifiedRules } from '../src/rules.js';
 
 const ids = (text, policy) => scan(text, policy).findings.map((f) => f.ruleId);
 const has = (text, id) => ids(text).includes(id);
 
 // ------------------------------------------------------------------- tiers
-test('every rule lands in exactly one tier', () => {
-  // A rule that falls through the tier table would be treated as dangerous,
-  // which is the safe default and also a silent bug: it would stop sends in
-  // warn mode for something nobody classified. Asserted so adding a detector
-  // forces the question.
-  for (const rule of RULES) {
-    assert.ok(TIERS.includes(tierOf(rule)), `${rule.id} has no tier`);
-  }
+test('every rule is explicitly classified, not defaulted', () => {
+  // The assertion that matters, and the one the first version of this test
+  // could not make. It checked `TIERS.includes(tierOf(rule))` while
+  // `tierOf()` ended `return 'dangerous'` — so it could not fail for any
+  // rule at all, including one nobody had classified. It asserted the
+  // existence of a fallback.
+  //
+  // `classify()` answers null when nothing placed a rule, so this does fail:
+  // add a detector in a category the tier table does not know and the build
+  // stops until somebody decides which tier it belongs to.
+  const unplaced = unclassifiedRules();
+  assert.deepEqual(unplaced.map((r) => `${r.id}/${r.category}`), [],
+    'these detectors are in no tier');
+  for (const rule of RULES) assert.ok(TIERS.includes(tierOf(rule)));
+});
+
+test('an unclassified rule fails classification but still fails closed', () => {
+  // Both properties, because they are different and the product needs both.
+  const invented = { id: 'something_new', category: 'quantum', severity: 'high' };
+  assert.equal(classify(invented), null, 'a new category must not be silently placed');
+  assert.equal(tierOf(invented), 'dangerous', 'and at runtime it must stop a send');
 });
 
 test('the tier is not the severity', () => {
@@ -35,6 +48,7 @@ test('the tier is not the severity', () => {
 test('an unknown rule is dangerous, never quiet', () => {
   assert.equal(tierOfId('a_detector_that_does_not_exist'), 'dangerous');
   assert.equal(tierOf(null), 'dangerous');
+  assert.equal(classify(null), null);
 });
 
 // --------------------------------------------------------------- checksums

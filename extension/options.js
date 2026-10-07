@@ -2,11 +2,11 @@ import { RULES, RULES_BY_ID, CATEGORIES } from './engine/rules.js';
 import { scan } from './engine/detect.js';
 import { redact } from './engine/redact.js';
 import { mergePolicy } from './engine/managed.js';
-import { DEFAULTS, LOCAL_FIELDS, readPolicy, writePolicy } from './policy.js';
+import { DEFAULTS, LOCAL_FIELDS, readPolicy, writePolicy, clearMigrationNotice } from './policy.js';
 
 const $ = (id) => document.getElementById(id);
 
-const { policy: own, migrated } = await readPolicy();
+const { policy: own, migrated, migrationFailed } = await readPolicy();
 const userPolicy = { ...DEFAULTS, ...own };
 
 // Organisation policy arrives through the browser's own enterprise channel —
@@ -135,11 +135,21 @@ $('enableAll').onclick = () => save({ disabled: [] }).then(() => renderGroups($(
 // rather than fixing it quietly: somebody who put a customer's address in
 // this box deserves to know it had been leaving the device, and that it has
 // stopped.
-if (migrated.includes('allow')) {
+if (migrated.includes('allow') || migrationFailed) {
   const note = $('migratedNote');
-  note.textContent = 'Your allowlist was previously synchronised to your other browsers. '
-    + 'It has been moved to this device only, and the synchronised copy has been deleted.';
+  // Two different pieces of news, and the second one is not good news.
+  note.textContent = migrationFailed
+    ? 'Your allowlist was previously synchronised to your other browsers, and Chhanni '
+      + `tried to move it to this device only \u2014 but ${migrationFailed}. It is still `
+      + 'being replicated. Clearing the list here and re-entering it will remove the '
+      + 'synchronised copy.'
+    : 'Your allowlist was previously synchronised to your other browsers. It has been '
+      + 'moved to this device only, and the synchronised copy has been deleted.';
+  note.classList.toggle('bad', Boolean(migrationFailed));
   note.hidden = false;
+  // Shown once, for good news. Bad news stays: it describes a condition that
+  // is still true, and will be re-attempted on the next read.
+  if (!migrationFailed) clearMigrationNotice();
 }
 
 const allow = $('allow');

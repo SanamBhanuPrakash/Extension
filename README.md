@@ -320,7 +320,7 @@ Add-ons are free. Store assets are generated at the required sizes in
 | [V1-CONTRACT](docs/V1-CONTRACT.md) | What must be true before V1, and what is explicitly not V1 |
 | [RELEASE-GATE](docs/RELEASE-GATE.md) | The gate, as something you run: `node scripts/gate.js` |
 | [PROVIDERS](docs/PROVIDERS.md) | Real-provider evidence. Today: none, and it says so |
-| [DECISIONS](docs/DECISIONS.md) | Forty-five decision records, each with its cost |
+| [DECISIONS](docs/DECISIONS.md) | Forty-nine decision records, each with its cost |
 | [CHANGELOG](CHANGELOG.md) · [PRIVACY](PRIVACY.md) | |
 
 ## What it does not do
@@ -366,8 +366,8 @@ states is a boundary everybody crosses. The short version:
 
 ```console
 $ node --test test/*.test.js
-# tests 138
-# pass 138
+# tests 148
+# pass 148
 ```
 
 Checksums against known-good and known-bad vectors, a proof that the

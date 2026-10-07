@@ -5,12 +5,25 @@
  * This project has been audited repeatedly, and the failure mode of repeated
  * auditing is an infinite sequence of findings with no definition of done.
  * Prose cannot fix that. A gate can: every criterion below is checked here,
- * by running the thing rather than by asserting it, and the exit code is the
- * answer to "can this ship".
+ * by running the thing rather than by asserting it.
  *
  *   node scripts/gate.js              everything that runs without a browser
  *   node scripts/gate.js --full       plus the browser and performance suites
+ *   node scripts/gate.js --release    --full, and BLOCKED is not good enough
  *   node scripts/gate.js --json
+ *
+ * The exit code answers the question the flags asked, and they are different
+ * questions:
+ *
+ *   0   the question was answered yes
+ *   1   a criterion FAILED — something in this repository is broken
+ *   2   --release only: nothing is broken, something is unproven
+ *
+ * Without --release the exit code means "did I break anything", which is what
+ * CI and a development loop want. With --release it means "can this ship",
+ * which is stricter: an unproven claim is not a shippable one, so BLOCKED
+ * exits non-zero too. Conflating the two is how `PRE-PRODUCTION` ends up
+ * printed above a successful exit, which is what this used to do.
  *
  * Criteria this cannot check are reported as BLOCKED with the reason, never
  * as a pass. The two that matter: real-provider certification needs accounts
@@ -24,7 +37,18 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const FULL = process.argv.includes('--full');
+/**
+ * The exit codes, declared rather than buried in the ternary below, because
+ * they are a contract with whoever runs this in CI and `check-docs.js`
+ * compares this table against `docs/RELEASE-GATE.md`.
+ */
+const EXIT = { answered: 0, broken: 1, unproven: 2 };
+
+const RELEASE = process.argv.includes('--release');
+// --release implies --full: deciding whether something can ship while leaving
+// the browser and performance suites unrun would block on the gate's own
+// laziness rather than on the product, and report it as an unproven claim.
+const FULL = process.argv.includes('--full') || RELEASE;
 const JSON_OUT = process.argv.includes('--json');
 const NO_COLOR = process.argv.includes('--no-color') || !process.stdout.isTTY;
 const c = (code, s) => (NO_COLOR ? s : `\u001b[${code}m${s}\u001b[0m`);
@@ -242,10 +266,73 @@ gate('DOCS', 'every provider PASS is dated, and every cell is a real verdict', (
 // ── PROVIDER ───────────────────────────────────────────────────────────────
 section('PROVIDER');
 
-gate('PROVIDER', 'every supported provider has a dated certification', () => ({
-  blocked: 'needs signed-in accounts and a display; run test/provider/run.mjs '
-    + '--profile <dir> --matrix docs/PROVIDERS.md. Until then this is the release blocker.',
-}));
+gate('PROVIDER', 'every provider is certified on both V1 send paths, dated', () => {
+  /**
+   * Reads the matrix. It used to be hardcoded `blocked`.
+   *
+   * That was the worst defect in this file, because it made the gate's own
+   * advertised end state unreachable: `INDUSTRY READY = everything passes`,
+   * and a criterion that can only ever be blocked can never pass. Somebody
+   * could certify all five providers and the gate would still refuse, until
+   * a human edited the gate — which means the gate was not the authority, a
+   * human editing the gate was.
+   *
+   * It consumes the evidence now, with the same rule the harness uses: a cell
+   * nobody drove is not a pass.
+   *
+   * It is scoped to the two paths marked `(V1)` in the matrix, because those
+   * are the ones V1 promises (`V1-CONTRACT.md` exit criterion 3) and the ones
+   * `test/provider/run.mjs` can drive on any provider. The remaining eight
+   * are V1.x and are reported, not demanded: holding V1 for work the roadmap
+   * assigns to V1.x is how a release criterion becomes permanent.
+   *
+   * A `FAIL` anywhere still fails, V1 path or not. A secret reaching a
+   * provider is the product failing, and no roadmap boundary excuses it.
+   */
+  const file = 'docs/PROVIDERS.md';
+  if (!existsSync(join(root, file))) return { ok: false, detail: `${file} is missing` };
+  const text = read(file);
+  const rows = text.split('\n')
+    .filter((l) => /^\| [a-z]/.test(l) && l.split('|').length > 5)
+    .filter((l) => !/^\| path \|/.test(l));
+  if (!rows.length) return { ok: false, detail: `${file} has no matrix rows` };
+
+  const parse = (line) => ({
+    path: line.split('|')[1].trim(),
+    cells: line.split('|').slice(2, -1).map((x) => x.trim().replace(/\*/g, '')).filter(Boolean),
+  });
+  const parsed = rows.map(parse);
+  const v1 = parsed.filter((r) => /\(V1\)$/.test(r.path));
+  if (!v1.length) {
+    return { ok: false,
+      detail: `no row in ${file} is marked (V1); the gate cannot tell which paths V1 promises` };
+  }
+
+  const all = parsed.flatMap((r) => r.cells);
+  const failed = all.filter((x) => x === 'FAIL').length;
+  if (failed) {
+    return { ok: false,
+      detail: `${failed} cell(s) FAIL — a secret reached a provider. That is the product failing.` };
+  }
+
+  const v1Cells = v1.flatMap((r) => r.cells);
+  const certified = v1Cells.filter((x) => x === 'PASS').length;
+  const skipped = v1Cells.filter((x) => x === 'UNSUPPORTED').length;
+  const open = v1Cells.length - certified - skipped;
+  const laterOpen = parsed.filter((r) => !/\(V1\)$/.test(r.path))
+    .flatMap((r) => r.cells).filter((x) => x !== 'PASS' && x !== 'UNSUPPORTED').length;
+  const dated = /\b20\d\d-\d\d-\d\d\b/.test(text);
+
+  if (open) {
+    return { blocked: `${certified}/${v1Cells.length} V1 cells certified, ${open} not. `
+      + 'Run `node test/provider/run.mjs --profile <dir> --matrix docs/PROVIDERS.md` with '
+      + 'accounts signed in. This is the V1 blocker.' };
+  }
+  if (!dated) return { ok: false, detail: `${certified} PASS cell(s) and no date in ${file}` };
+  return { ok: true,
+    detail: `${certified}/${v1Cells.length} V1 cells certified and dated`
+      + `${laterOpen ? `; ${laterOpen} V1.x cell(s) still open, which V1 does not promise` : ''}` };
+});
 
 // ── VALIDATION ─────────────────────────────────────────────────────────────
 section('VALIDATION');
@@ -257,9 +344,38 @@ gate('VALIDATION', 'detection measured against an independent corpus', () => ({
 }));
 
 gate('VALIDATION', 'alarm rate measured on third-party source', () => {
-  const r = runs('ls', ['/tmp/claude-0/wild']);
-  if (!r.ok) return { blocked: 'the wild corpus is not on this machine; node bench/wild.js <dir>' };
-  return { ok: true, detail: 'bench/wild.js available' };
+  /**
+   * Runs the benchmark. It used to be `ls /tmp/claude-0/wild`.
+   *
+   * Which is to say it asked whether a particular directory existed on a
+   * particular machine, passed on the author's laptop, blocked everywhere
+   * else, never executed `bench/wild.js`, and never looked at a number. A
+   * presence check wearing a measurement's name is exactly the kind of claim
+   * this project refuses to make about anything else.
+   *
+   * The corpus is third-party source nobody wrote for this benchmark, so it
+   * cannot be committed. Its location comes from `CHHANNI_WILD`, and its
+   * absence is `BLOCKED` with the command to fix it — portable, and honest on
+   * a machine that does not have it.
+   */
+  const corpus = process.env.CHHANNI_WILD || '/tmp/claude-0/wild';
+  if (!existsSync(corpus)) {
+    return { blocked: `no corpus at ${corpus}. Clone a dozen large public repositories there `
+      + 'and re-run, or set CHHANNI_WILD. This measures false positives on code nobody '
+      + 'wrote for this benchmark, which the internal corpus cannot.' };
+  }
+  const r = runs(process.execPath, ['bench/wild.js', corpus, '--no-color'], { timeout: 1800000 });
+  if (!r.ok) return r;
+  const m = r.stdout.match(/([\d,]+) files,[\s\S]*?would raise the panel[^,]*,\s*([\d.]+)%/);
+  if (!m) return { ok: false, detail: 'bench/wild.js output did not contain an alarm rate' };
+  const files = Number(m[1].replace(/,/g, ''));
+  const rate = Number(m[2]);
+  // The threshold is a product claim, not a statistic: above roughly one file
+  // in a hundred the panel becomes background noise and gets dismissed.
+  const LIMIT = 1.0;
+  if (files < 10000) return { ok: false, detail: `only ${files} files scanned; too small to mean anything` };
+  return { ok: rate <= LIMIT,
+    detail: `${rate}% of ${files.toLocaleString()} files would raise the panel (limit ${LIMIT}%)` };
 });
 
 // ── report ─────────────────────────────────────────────────────────────────
@@ -276,6 +392,19 @@ if (JSON_OUT) {
   if (verdict === 'PRE-PRODUCTION') {
     console.log(dim('  Nothing checked here is failing. What is missing cannot be checked from'));
     console.log(dim('  this machine, and is listed above rather than assumed.'));
+    console.log(dim(RELEASE
+      ? '  --release was asked, so this exits 2: an unproven claim is not shippable.'
+      : '  This exits 0: nothing is broken. Ask `--release` for the shipping answer.'));
+  }
+  if (!FULL) {
+    console.log(dim('\n  Run with --full to include the browser and performance suites.'));
   }
 }
-process.exit((counts.FAIL || 0) > 0 ? 1 : 0);
+
+/**
+ * 1 beats 2: a broken repository is a more urgent answer than an unproven
+ * one, and a caller that only checks for zero is unaffected either way.
+ */
+process.exit((counts.FAIL || 0) > 0 ? EXIT.broken
+  : RELEASE && (counts.BLOCKED || 0) > 0 ? EXIT.unproven
+    : EXIT.answered);

@@ -77,6 +77,11 @@ jobs:
       # their own steps below. A FAIL here is a release blocker by definition;
       # a BLOCKED criterion is one this runner cannot check and is listed in
       # docs/RELEASE-GATE.md rather than skipped.
+      #
+      # Deliberately not --release. That mode asks "can this ship" and exits 2
+      # on a BLOCKED criterion, which would fail every push over provider
+      # certification — work no CI runner can do — and train everybody to
+      # ignore the gate. The question CI asks is "did this break anything".
       - name: The release gate
         run: node scripts/gate.js --no-color
 
