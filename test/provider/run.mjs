@@ -16,15 +16,26 @@
  * what the composer looks like afterwards. If the sentinel is in that body,
  * the guard failed, whatever the UI said.
  *
+ *   npm run certify                       sign in, then measure, in one go
+ *   npm run certify -- --signin           sign in only, and stop
+ *   npm run certify -- --only chatgpt     one provider
+ *
+ * or the long form, which is the same thing:
+ *
  *   node scripts/build.js
- *   node test/provider/run.mjs --profile ~/.chhanni-test-profile
+ *   node test/provider/run.mjs --profile ~/.chhanni-test-profile --matrix docs/PROVIDERS.md
  *
- * The first run opens a visible browser and stops, so you can sign in to
- * whichever providers you want covered. Logins persist in that profile
- * directory; every later run reuses them.
+ * The first run opens a visible browser, puts each provider in its own tab,
+ * says which ones you are signed in to, and **waits** while you sign in to
+ * the rest. Logins persist in that profile directory, so every later run
+ * reuses them and needs no pause.
  *
- *   node test/provider/run.mjs --profile <dir> --only chatgpt
- *   node test/provider/run.mjs --profile <dir> --matrix docs/PROVIDERS.md
+ * For a long time this file's header promised that pause and no code
+ * implemented it. A first run therefore drove all five providers straight
+ * into their login walls, wrote `NOT TESTED` fifty times, and exited 2 —
+ * so the one step between this repository and a finished V1 could not have
+ * worked for anybody who tried it. The gate was honest about the evidence
+ * being missing and silent about the reason being a missing twenty lines.
  *
  * ── the sentinel ──────────────────────────────────────────────────────────
  *
@@ -86,7 +97,24 @@ if (!chromium) {
  * each one and reports `selector-not-found` rather than quietly passing a
  * test it never ran.
  */
-const PROVIDERS = [
+/**
+ * `--providers <file>` replaces this table with a JSON array of the same
+ * shape, with `api` as a regular-expression source string.
+ *
+ * It exists so the sign-in phase can be tested. That phase was promised in
+ * this file's header for weeks with no code behind it, and nothing caught it
+ * because the only thing that exercises these five entries is a person with
+ * five accounts. A local fixture can stand in for a provider that wants a
+ * login and one that does not, which is all the phase needs to decide.
+ *
+ * It is a test seam, not a configuration surface: the real five are the
+ * certification target and `docs/PROVIDERS.md` names them.
+ */
+const PROVIDERS_FILE = arg('--providers');
+
+const PROVIDERS = PROVIDERS_FILE ? JSON.parse(readFileSync(PROVIDERS_FILE, 'utf8')).map((p) => ({
+  ...p, api: (u) => new RegExp(p.api).test(u),
+})) : [
   {
     id: 'chatgpt',
     name: 'ChatGPT',
@@ -193,6 +221,21 @@ const EXT = join(root, 'dist', 'chrome');
  * extension at all and does not say so.
  */
 const headless = process.argv.includes('--headless');
+/** Sign in and stop, so the human part and the measuring part are separable. */
+const SIGNIN_ONLY = process.argv.includes('--signin');
+/**
+ * Whether to stop and wait for a person.
+ *
+ * By default: yes, when there is a terminal and a visible browser, because
+ * that is somebody sitting in front of it. `--no-wait` for a profile that
+ * already holds the logins. `--wait` forces it the other way — stdin is a
+ * pipe but something is still answering — which is also how the pause is
+ * tested, because a pause reachable only behind `isTTY` is a pause no test
+ * can watch, and that is how the missing one went unnoticed for weeks.
+ */
+const FORCE_WAIT = process.argv.includes('--wait');
+const NO_WAIT = process.argv.includes('--no-wait')
+  || (!FORCE_WAIT && (headless || !process.stdin.isTTY));
 let ctx;
 try {
   ctx = await chromium.launchPersistentContext(profileDir, {
@@ -311,10 +354,130 @@ async function certify(page, isApi, drive) {
   return { verdict: 'PASS', detail: `${real.length} request(s), sentinel in none` };
 }
 
+// ── the sign-in phase ──────────────────────────────────────────────────────
+//
+// Nothing here can be measured on a provider nobody is logged into, and only
+// a person can log in. So this opens a tab per provider, says which ones are
+// reachable, and then stops — with those tabs still open, so signing in
+// happens in the very browser the measurement will use a moment later.
+//
+// Everything after this point treats "not signed in" as a distinct state from
+// "the markup moved". They used to be the same message, which blamed ChatGPT's
+// markup for the absence of an account.
+
+/** A composer we can type into, or why not. */
+async function readiness(page, provider) {
+  try {
+    await page.goto(provider.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  } catch (err) {
+    return { ready: false, why: 'unreachable', detail: String(err.message).split('\n')[0].slice(0, 80) };
+  }
+  await page.waitForTimeout(3500);
+  for (const sel of provider.composer) {
+    if (await page.locator(sel).count().catch(() => 0)) return { ready: true, composer: sel };
+  }
+  // No composer. Distinguish a login wall from a redesign, because the first
+  // is the person's to fix in thirty seconds and the second is ours.
+  const wall = await page.locator(
+    'input[type="password"], input[type="email"], a[href*="login" i], a[href*="signin" i], '
+    + 'button:has-text("Log in"), button:has-text("Sign in"), button:has-text("Continue with")',
+  ).count().catch(() => 0);
+  const url = page.url();
+  if (wall || /login|signin|sign-in|auth|account/i.test(url)) {
+    return { ready: false, why: 'not signed in', detail: `no composer, a sign-in page at ${url.slice(0, 60)}` };
+  }
+  return { ready: false, why: 'markup moved',
+    detail: `signed in, but none of ${provider.composer.join(', ')} matched` };
+}
+
+const waitForEnter = (what) => new Promise((resolve) => {
+  process.stdout.write(what);
+  process.stdin.resume();
+  process.stdin.once('data', () => { process.stdin.pause(); resolve(); });
+});
+
+const tabs = new Map();
+const state = new Map();
+console.log(`\nopening ${chosen.length} provider(s)…`);
+for (const provider of chosen) {
+  const page = await ctx.newPage();
+  tabs.set(provider.id, page);
+  state.set(provider.id, await readiness(page, provider));
+}
+
+const report = () => {
+  for (const provider of chosen) {
+    const r = state.get(provider.id);
+    console.log(r.ready
+      ? `  ${green('signed in')}  ${provider.name}`
+      : `  ${yellow(r.why.padEnd(9))}  ${provider.name}  ${dim(r.detail)}`);
+  }
+};
+report();
+
+const missing = chosen.filter((p) => !state.get(p.id).ready && state.get(p.id).why === 'not signed in');
+if (missing.length && !NO_WAIT) {
+  console.log(`\n${missing.length} provider(s) need a sign-in. The tabs are open in the browser`);
+  console.log('that just launched — sign in to the ones you want covered. You can skip any');
+  console.log('you do not have an account for; they will read NOT TESTED, which is honest.');
+  console.log(dim('\nLogins are saved in the profile directory, so this is a one-time step.'));
+  await waitForEnter('\nPress Enter here when you are done (or now, to skip): ');
+  console.log('\nre-checking…');
+  for (const provider of missing) {
+    state.set(provider.id, await readiness(tabs.get(provider.id), provider));
+  }
+  report();
+} else if (missing.length) {
+  console.log(dim(`\n${missing.length} not signed in, and this run cannot pause `
+    + `(${process.argv.includes('--no-wait') ? '--no-wait' : headless ? '--headless' : 'no terminal'}).`));
+  console.log(dim('Run `npm run certify -- --signin` once on a desktop to log in.'));
+}
+
+for (const page of tabs.values()) await page.close().catch(() => {});
+
+/**
+ * Nothing to measure.
+ *
+ * Without this, a first run on a machine with no accounts printed fifty
+ * identical rows of the same error before admitting it had tested nothing.
+ * The information was all there and the shape of it told the person the tool
+ * was broken.
+ */
+const anyReady = chosen.some((p) => state.get(p.id).ready);
+if (!anyReady && !SIGNIN_ONLY) {
+  await ctx.close().catch(() => {});
+  console.log(yellow(`\nno provider could be driven, so nothing was measured.`));
+  const why = [...new Set(chosen.map((p) => state.get(p.id).why))];
+  console.log(`Reason${why.length > 1 ? 's' : ''}: ${why.join(', ')}.`);
+  console.log(why.includes('not signed in')
+    ? 'Run `npm run certify -- --signin` on a desktop and log in first.'
+    : 'The matrix is unchanged; nothing here is evidence either way.');
+  process.exit(2);
+}
+
+if (SIGNIN_ONLY) {
+  const in_ = chosen.filter((p) => state.get(p.id).ready).length;
+  await ctx.close().catch(() => {});
+  console.log(`\n${in_}/${chosen.length} provider(s) signed in and saved to ${profileDir}`);
+  console.log(in_ ? 'Now run `npm run certify` to measure what they receive.'
+    : yellow('Nothing is signed in, so there is nothing to measure yet.'));
+  process.exit(in_ ? 0 : 2);
+}
+
 for (const provider of chosen) {
   console.log(`\n${provider.name} ${dim(provider.url)}`);
   const page = await ctx.newPage();
   try {
+    // The sign-in phase already answered this, and said which of the two
+    // reasons it is. Re-asking would only lose that distinction.
+    const known = state.get(provider.id);
+    if (!known.ready) {
+      for (const path of PATHS) record(provider, path, 'NOT TESTED', `${known.why}: ${known.detail}`);
+      console.log(`  ${yellow(known.why)} — skipped`);
+      await page.close();
+      continue;
+    }
+
     await page.goto(provider.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(4000);
 
@@ -324,9 +487,6 @@ for (const provider of chosen) {
       composer = await firstOf(page, provider.composer, 'composer');
       send = await firstOf(page, provider.send, 'send button');
     } catch (err) {
-      // Not signed in, or the markup moved. Either way every row below would
-      // be a test that did not run, and reporting those as passes is the one
-      // thing this file must never do.
       for (const path of PATHS) record(provider, path, 'NOT TESTED', err.message.slice(0, 90));
       await page.close();
       continue;

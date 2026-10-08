@@ -4,3 +4,7 @@ node_modules/
 extension/engine/
 dist/
 package-lock.json
+
+# The signed-in browser profile `npm run certify` keeps between runs.
+# Relative rather than ~ so the same command works on Windows.
+.chhanni-profile/

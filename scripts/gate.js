@@ -325,8 +325,8 @@ gate('PROVIDER', 'every provider is certified on both V1 send paths, dated', () 
 
   if (open) {
     return { blocked: `${certified}/${v1Cells.length} V1 cells certified, ${open} not. `
-      + 'Run `node test/provider/run.mjs --profile <dir> --matrix docs/PROVIDERS.md` with '
-      + 'accounts signed in. This is the V1 blocker.' };
+      + 'Run `npm run certify -- --signin` once on a desktop, then `npm run certify`. '
+      + 'See docs/SHIP.md gate 1. This is the V1 blocker.' };
   }
   if (!dated) return { ok: false, detail: `${certified} PASS cell(s) and no date in ${file}` };
   return { ok: true,

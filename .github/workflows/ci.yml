@@ -102,6 +102,19 @@ jobs:
         if: matrix.node == '22.x'
         run: node test/e2e/run.mjs --no-color
 
+      # The certification harness itself, against file:// fixtures standing in
+      # for a signed-in provider and a login wall.
+      #
+      # It is here because the harness's sign-in phase was described in its own
+      # header for weeks with no code behind it, and nothing noticed: the only
+      # thing that drives the real five is a person with five accounts, so the
+      # one step between this repository and a finished V1 was the step no test
+      # touched. A first run therefore walked five login walls, wrote NOT
+      # TESTED fifty times and exited 2.
+      - name: The certification harness can be run by a person
+        if: matrix.node == '22.x'
+        run: node --test test/provider/signin.test.mjs
+
       # What the extension costs, which is what gets one uninstalled. The
       # budgets are in test/perf/run.mjs with the reasoning for each; they
       # fail the build the same way a wrong answer does. This job is also the

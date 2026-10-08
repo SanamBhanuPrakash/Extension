@@ -1426,3 +1426,60 @@ opposite.
 `classify()` existed. Every guard added in this pass was then run against the
 drift it was written for, and each was confirmed to fail before being
 confirmed to pass. That ordering is the whole lesson of decision 46.
+
+---
+
+### 50. The step between here and a release was the step no test touched
+
+**Context.** For a month the answer to "what is left" was the same sentence:
+*provider certification, about an hour for somebody with five accounts.* The
+gate said it. `V1-CONTRACT.md` said it. `RELEASE-GATE.md` put a time estimate
+on it.
+
+`test/provider/run.mjs` opens with this, and has since it was written:
+
+> The first run opens a visible browser and stops, so you can sign in to
+> whichever providers you want covered.
+
+There was no such code. No `readline`, no `stdin`, no wait of any kind. A
+first run launched Chromium, drove all five providers straight into their
+login walls, wrote `NOT TESTED` fifty times, and exited 2. The one action
+standing between this repository and a finished V1 **could not have worked
+for anybody who attempted it.**
+
+Worse, it misdiagnosed itself. A missing composer was reported as
+`this provider's markup has changed` — so a person with no ChatGPT account
+would have been told ChatGPT had been redesigned.
+
+Nothing caught either, and the reason is worth keeping: the only thing that
+exercises those five entries is a person with five accounts, so this was the
+single path in the project with no test, no CI step, and no second reader. It
+was also the path with the highest value per minute spent on it.
+
+**Decision.** The phase exists now: a tab per provider, a readiness probe that
+distinguishes *signed in* from *not signed in* from *unreachable*, a printed
+list, and a stop — with those tabs still open, so signing in happens in the
+very browser that measures a moment later. `--signin` does that and nothing
+else, so the human part and the measuring part are separable. `npm run
+certify` is the whole thing.
+
+Four tests cover it, against `file://` fixtures standing in for a signed-in
+composer and a login wall, and they run in CI on every push. `--wait` forces
+the pause over a pipe, because a pause reachable only behind
+`process.stdin.isTTY` is a pause no test can watch — which is precisely how
+the missing one survived. Each test was then run against the old behaviour:
+removing the pause fails exactly one of them, removing the login-wall
+diagnosis fails three.
+
+**What this is not.** Not a feature. It is twenty lines that a header comment
+claimed were already there.
+
+**The general lesson, which is the reason this record exists.** A month of
+work went into proving the product correct and none into the path by which
+anybody would ever use it. Every audit in `DECISIONS.md` asked *is this
+claim true?* and the claim that failed was not in the engine — it was the
+sentence telling a person what to type. `docs/SHIP.md` exists so that path
+has an owner, and its commands are now checked against `package.json` by
+`check-docs.js`, because this project has shipped a documented step with no
+code behind it once already.
+

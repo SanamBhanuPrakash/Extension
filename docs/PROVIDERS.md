@@ -17,13 +17,20 @@ so the second one cannot be quietly mistaken for the first.
 ## How to fill it in
 
 ```console
-node scripts/build.js
-node test/provider/run.mjs --profile ~/.chhanni-test-profile --matrix docs/PROVIDERS.md
+npm install --no-save playwright-core
+npm run certify -- --signin     # opens a tab per provider, waits while you log in
+npm run certify                 # measures, and rewrites the matrix below
 ```
 
-The first run opens a visible browser; sign in to whichever providers you want
-covered. Logins persist in that profile. The harness rewrites this file with
+The first command opens a visible browser with one tab per provider, says
+which ones you are already signed in to, and **stops** while you sign in to
+the rest. Skip any you have no account for — they stay `NOT TESTED`, which is
+the truth. Logins persist in the profile directory, so this is a one-time
+step; the second command needs no pause and rewrites the matrix below with
 the date stamped in.
+
+`docs/SHIP.md` gate 1 is the same thing with the decision table for what each
+outcome means.
 
 ## Cell meanings
 

@@ -355,7 +355,7 @@ if (!e2e) {
 // project's actual failure mode — endless auditing with no shape to fix
 // things into — and a repository that lost one of them would be back to it.
 for (const plan of ['docs/SYSTEM-DESIGN.md', 'docs/V1-CONTRACT.md',
-  'docs/RELEASE-GATE.md', 'docs/PROVIDERS.md']) {
+  'docs/RELEASE-GATE.md', 'docs/PROVIDERS.md', 'docs/SHIP.md']) {
   if (!existsSync(join(root, plan))) problems.push(`${plan} is missing`);
 }
 // Every criterion the gate checks must be named in RELEASE-GATE.md, so the
@@ -458,6 +458,22 @@ for (const plan of ['docs/SYSTEM-DESIGN.md', 'docs/V1-CONTRACT.md',
     if (!/--release/.test(gate)) problems.push('scripts/gate.js has no --release mode');
     if (!/--release/.test(doc)) problems.push('docs/RELEASE-GATE.md does not document --release');
   }
+}
+
+// `docs/SHIP.md` is the only document whose job is to be executed by a person
+// rather than read. Every command it names must exist, because the step it
+// describes is the one blocking a release — and because this project has
+// already shipped a documented step with no code behind it once.
+{
+  const ship = read('docs/SHIP.md');
+  const scripts = JSON.parse(read('package.json')).scripts || {};
+  const named = [...new Set([...ship.matchAll(/npm run ([\w:-]+)/g)].map((m) => m[1]))];
+  const missing = named.filter((n) => !scripts[n]);
+  if (!named.length) problems.push('docs/SHIP.md names no command to run');
+  else if (missing.length) {
+    problems.push(`docs/SHIP.md tells a person to run \`npm run ${missing[0]}\`, `
+      + 'which package.json does not define');
+  } else checks.push(`ship checklist: ${named.length} command(s), all defined in package.json`);
 }
 
 // ── every doc link resolves ──────────────────────────────────────────────

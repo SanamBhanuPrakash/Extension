@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+### The one step left could not have worked
+
+For a month the answer to "what is left" was: *provider certification, about
+an hour for somebody with five accounts.* `test/provider/run.mjs` opened with
+this, and had since it was written:
+
+> The first run opens a visible browser and stops, so you can sign in to
+> whichever providers you want covered.
+
+There was no such code. No `readline`, no `stdin`, no wait of any kind. A
+first run launched Chromium, drove all five providers straight into their
+login walls, wrote `NOT TESTED` fifty times and exited 2. It also blamed
+itself on the wrong thing: a missing composer was reported as *this
+provider's markup has changed*, so somebody with no ChatGPT account would
+have been told ChatGPT had been redesigned.
+
+Nothing caught it, and the reason is the point. The only thing that drives
+those five entries is a person with five accounts, so this was the one path
+in the project with no test, no CI step and no second reader — and the one
+with the highest value per minute spent on it. A month went into proving the
+engine correct and none into the path by which anybody would use it.
+
+The phase exists now:
+
+```console
+npm run certify -- --signin     # a tab per provider; it waits while you log in
+npm run certify                 # measures, rewrites the matrix
+```
+
+It probes each provider and distinguishes **signed in** from **not signed
+in** from **unreachable**, prints the list, and stops with those tabs still
+open, so signing in happens in the browser that measures a moment later.
+Providers you have no account for stay `NOT TESTED`. With nothing drivable it
+now says so in three lines instead of printing fifty identical errors.
+
+Four tests cover it against `file://` fixtures standing in for a signed-in
+composer and a login wall, and they run in CI on every push. `--wait` forces
+the pause over a pipe, because a pause reachable only behind
+`process.stdin.isTTY` is one no test can watch — which is how the missing one
+survived. Run against the old behaviour: removing the pause fails exactly one
+test, removing the login-wall diagnosis fails three.
+
+### A checklist instead of another audit
+
+`docs/SHIP.md`. Two gates, both human — certify the providers (~25 minutes,
+once) and submit to the store (~1 hour, once) — with the decision table for
+what each certification outcome means, and a freeze: between now and a live
+listing, the only changes allowed are a `FAIL` cell, a reviewer's written
+blocker, or a bug found by using it.
+
+It also writes down the thing that cost the month. Product work and assurance
+work had become one loop, so every change became a security analysis, then an
+architecture question, then a document, then a guard on the document. They are
+two loops. The gate is where they meet, and the gate already exists.
+
+`check-docs.js` now checks that every command `SHIP.md` tells a person to run
+is defined in `package.json`, because this project has shipped a documented
+step with no code behind it once already.
+
+- 148 tests, 44 browser cases, 4 certification-harness tests, 19 gate
+  criteria, and 50 decision records. The harness tests are not in `npm test`:
+  they launch Chromium, and the inner loop stays dependency-free.
+
 ### The proof machinery had the defect it was built to catch
 
 The previous entry shipped a plan — a system design, a V1 contract, a provider
